@@ -1,0 +1,10 @@
+id: G6-late-game-calibration
+registered: 2026-10-06
+hypothesis: In the final 10 minutes, Kalshi leaders priced 85-95c win more often than price + fee (Moshrefi 2026 found this on NBA/MLB/NHL).
+data: Kalshi game-winner books from the tape; final scores; game clocks (nba_api, nflverse)
+metric: realized YES rate minus (price + taker fee) by 5c bucket, final 10 minutes of regulation; depth at the touch
+go: 85-95c bucket beats price + fee by >= 2 points with the 95% CI excluding zero, tens of contracts at the touch, >= 200 games
+no_go: miscalibration smaller than fees, or depth under 10 contracts around scoring plays
+min_sample: 200 games per league (NBA reaches this around 2026-11-17; NFL around 2027-01-10)
+earliest_read: 2026-11-17 (NBA)
+owners: {runs: quant-analyst, reviews: red-team, decides: ashmit}
