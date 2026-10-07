@@ -6,8 +6,8 @@ Needs a Kalshi API key (the WebSocket handshake is authenticated even for public
 Until you have one, run tape.recorder_rest instead.
 
 Every message is written as received, wrapped as {"recv_ts_ms": ..., "src": "kalshi_ws", "m": <message>}.
-On a sequence gap the affected subscription is dropped and re-subscribed, which delivers fresh
-snapshots; a "_gap" marker is written so analysis can see exactly where the tape was repaired.
+On a sequence gap the subscription is dropped and re-subscribed for every market, which delivers
+fresh snapshots; a "_gap" marker is written so analysis can see exactly where the tape was repaired.
 """
 from __future__ import annotations
 
@@ -16,8 +16,10 @@ import asyncio
 import itertools
 import json
 import logging
+import ssl
 import time
 
+import certifi
 import websockets
 
 from .book import SeqTracker
@@ -28,19 +30,25 @@ from .kalshi_rest import KalshiREST
 from .writer import JsonlWriter, now_ms
 
 log = logging.getLogger("recorder_ws")
-CHUNK = 100  # tickers per subscription; smaller subscriptions are less likely to overflow (error 25)
+# Use certifi's CA bundle: python.org builds on macOS ship without system certificates.
+SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+CHANNELS = ("orderbook_delta", "trade")
 
 
 class Session:
-    """One WebSocket connection: subscribe in chunks, record everything, repair gaps."""
+    """One WebSocket connection: one subscription per channel covering every market.
+
+    Kalshi merges all subscriptions to the same channel on a connection into a single sid, and
+    its "ok" replies consume that sid's sequence numbers (observed 2026-10-07). So the sequence
+    check covers every message carrying a sid and seq, and a repair re-subscribes all markets.
+    """
 
     def __init__(self, ws, tickers: list[str], writer: JsonlWriter):
         self.ws = ws
         self.writer = writer
+        self.tickers = tickers
         self.ids = itertools.count(1)
-        self.chunks = [tickers[i : i + CHUNK] for i in range(0, len(tickers), CHUNK)]
-        self.pending: dict[int, tuple[str, int]] = {}  # command id -> (channel, chunk index)
-        self.sid_chunk: dict[int, tuple[str, int]] = {}  # sid -> (channel, chunk index)
+        self.sid_channel: dict[int, str] = {}
         self.dead_sids: set[int] = set()
         self.seq = SeqTracker()
         self.stats = {"msgs": 0, "deltas": 0, "trades": 0, "gaps": 0, "errors": 0}
@@ -50,25 +58,22 @@ class Session:
         await self.ws.send(json.dumps({"id": cid, "cmd": cmd, "params": params}))
         return cid
 
-    async def subscribe(self, channel: str, idx: int) -> None:
-        cid = await self.send("subscribe", {"channels": [channel], "market_tickers": self.chunks[idx]})
-        self.pending[cid] = (channel, idx)
+    async def subscribe(self, channel: str) -> None:
+        await self.send("subscribe", {"channels": [channel], "market_tickers": self.tickers})
 
     async def start(self) -> None:
-        for idx in range(len(self.chunks)):
-            await self.subscribe("orderbook_delta", idx)
-            await self.subscribe("trade", idx)
+        for channel in CHANNELS:
+            await self.subscribe(channel)
 
     async def repair(self, sid: int, seq: int, recv: int) -> None:
+        channel = self.sid_channel.pop(sid, "orderbook_delta")
         self.stats["gaps"] += 1
-        self.writer.write({"recv_ts_ms": recv, "src": "recorder", "type": "_gap", "sid": sid, "seq": seq})
-        channel, idx = self.sid_chunk.pop(sid, ("orderbook_delta", None))
+        self.writer.write({"recv_ts_ms": recv, "src": "recorder", "type": "_gap", "sid": sid, "seq": seq, "channel": channel})
         self.dead_sids.add(sid)
         self.seq.reset(sid)
         await self.send("unsubscribe", {"sids": [sid]})
-        if idx is not None:
-            await self.subscribe(channel, idx)
-        log.warning("seq gap on sid %s at seq %s; re-subscribed", sid, seq)
+        await self.subscribe(channel)
+        log.warning("seq gap on %s (sid %s, seq %s); re-subscribed all %d markets", channel, sid, seq, len(self.tickers))
 
     async def handle(self, raw: str) -> None:
         recv = now_ms()
@@ -77,21 +82,21 @@ class Session:
         self.stats["msgs"] += 1
         kind = data.get("type")
         if kind == "subscribed":
-            sid = data.get("msg", {}).get("sid")
-            if data.get("id") in self.pending and sid is not None:
-                self.sid_chunk[sid] = self.pending.pop(data["id"])
+            msg = data.get("msg", {})
+            if msg.get("sid") is not None:
+                self.sid_channel[msg["sid"]] = msg.get("channel", "")
         elif kind in ("orderbook_snapshot", "orderbook_delta"):
             self.stats["deltas"] += 1
-            sid, seq = data.get("sid"), data.get("seq")
-            if sid in self.dead_sids or sid is None or seq is None:
-                return
-            if not self.seq.check(sid, seq):
-                await self.repair(sid, seq, recv)
         elif kind == "trade":
             self.stats["trades"] += 1
         elif kind == "error":
             self.stats["errors"] += 1
             log.error("server error: %s", data)
+        sid, seq = data.get("sid"), data.get("seq")
+        if sid is None or seq is None or sid in self.dead_sids:
+            return
+        if not self.seq.check(sid, seq):
+            await self.repair(sid, seq, recv)
 
     async def run(self, until_monotonic: float) -> None:
         await self.start()
@@ -133,7 +138,12 @@ async def run(args: argparse.Namespace) -> None:
             headers = auth_headers(creds.key_id, private_key, "GET", WS_SIGN_PATH)
             try:
                 async with websockets.connect(
-                    KALSHI[args.env]["ws"], additional_headers=headers, ping_interval=20, ping_timeout=20, max_size=2**24
+                    KALSHI[args.env]["ws"],
+                    additional_headers=headers,
+                    ssl=SSL_CONTEXT,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    max_size=2**24,
                 ) as ws:
                     writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_connected"})
                     await Session(ws, tickers, writer).run(time.monotonic() + args.refresh_min * 60)
