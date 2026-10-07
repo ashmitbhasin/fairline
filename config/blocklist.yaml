@@ -1,0 +1,13 @@
+# Markets Fairline must never trade (enforced by the risk gate from Phase 1).
+# Recording them is fine; trading them is not.
+#
+# Reason: Kalshi's sports series prohibit trading by anyone holding material non-public
+# information, and Ashmit attends Indiana University. Any IU team, and any event where
+# friends or classmates could pass along non-public information, is off limits.
+teams:
+  - league: ncaaf
+    names: ["Indiana", "Indiana Hoosiers", "IU"]
+  - league: ncaab
+    names: ["Indiana", "Indiana Hoosiers", "IU"]
+# Add anything else you could plausibly know about before the market does.
+events: []

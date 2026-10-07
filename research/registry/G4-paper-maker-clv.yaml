@@ -1,0 +1,12 @@
+id: G4-paper-maker-clv
+registered: 2026-10-06
+hypothesis: Post-only quotes placed a fixed margin inside devigged Pinnacle fair value earn positive closing-line value after fees.
+data: simulated quotes over the tape; fills counted only when a trade prints through the quote price (trade-through rule)
+fees: maker fee 0.0175 x P x (1 - P) per contract on quadratic_with_maker_fees series (all core NFL/NBA series as of
+      2026-10-06), rounded up to the cent per order. Read fee_type per series from the API; never assume zero.
+metric: mean CLV per fill in probability space (fair_at_close - effective price incl. fee), with 95% CI
+go: mean CLV > 0 with the 95% CI excluding zero over >= 300 fills, and no clustering of fills before adverse Pinnacle moves
+no_go: fills cluster in the minutes before Pinnacle moves against the quote (adverse selection)
+min_sample: 300 simulated fills
+earliest_read: 2026-11-16
+owners: {runs: quant-analyst, reviews: red-team, decides: ashmit}

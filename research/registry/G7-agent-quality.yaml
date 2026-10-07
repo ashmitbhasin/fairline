@@ -1,0 +1,14 @@
+id: G7-agent-quality
+registered: 2026-10-06
+hypothesis: Every agent meets its own measured bar before it is trusted with more access.
+metrics:
+  cartographer: ">= 99% accuracy on 200 hand-labeled market-map pairs"
+  news_desk: "precision >= 90%, recall >= 80% on 150 labeled events"
+  ops_watchdog: "detects 10 of 10 injected faults in < 2 minutes"
+  quant_analyst: "reproduces hand-computed gate values exactly on a frozen data slice"
+  red_team: "catches >= 4 of 5 planted flaws each month"
+  research_scout: "every claim has a working source link; >= 50% of hypothesis PRs accepted"
+go: all agents at target
+no_go: any agent below target loses tool permissions until fixed
+earliest_read: 2026-11-16
+owners: {runs: desk-lead, reviews: red-team, decides: ashmit}

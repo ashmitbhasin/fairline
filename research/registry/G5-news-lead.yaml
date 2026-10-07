@@ -1,0 +1,10 @@
+id: G5-news-lead
+registered: 2026-10-06
+hypothesis: The News Desk agent detects material injury/inactive news before Kalshi reprices, often enough to pull quotes in time.
+data: news_events table (record-only); Kalshi tape; Pinnacle snapshots
+metric: seconds from News Desk detection to the first Kalshi mid move >= 2c on the affected markets; extraction precision
+go: detection precedes the Kalshi reprice by more than my cancel latency on >= 60% of material events, with precision >= 90%
+no_go: Kalshi moves first on most events, or precision < 90%
+min_sample: 40 material events
+earliest_read: 2026-11-16
+owners: {runs: quant-analyst, reviews: red-team, decides: ashmit}

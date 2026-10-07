@@ -1,0 +1,13 @@
+id: G1-tape-integrity
+registered: 2026-10-06
+hypothesis: The recorder captures every core NFL and NBA market reliably enough that every other gate can trust the tape.
+data: data/raw/kalshi_ws (primary), data/raw/kalshi_rest (fallback), data/raw/odds
+metrics:
+  - uptime in game windows (from 4h before kickoff to final), measured from _connected/_disconnected markers
+  - every _gap marker followed by a fresh orderbook_snapshot for that subscription within 5 s
+  - share of core markets (game, spread, total) mapped to an Odds API event and an nflverse/NBA game id
+go: uptime >= 99%; 100% of gaps resynced in < 5 s; >= 98% of core markets mapped
+no_go: anything less. Fix the tape before reading any other gate.
+min_sample: 7 consecutive days of recording
+earliest_read: 2026-10-26
+owners: {runs: quant-analyst, reviews: red-team, decides: ashmit}

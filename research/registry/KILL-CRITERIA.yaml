@@ -1,0 +1,10 @@
+id: kill-criteria
+registered: 2026-10-06
+applies_from: Phase 1 (live capital)
+rules:
+  - 30-fill rolling mean CLV below -0.5c for two consecutive windows -> halt quoting
+  - fill-side imbalance above 70/30 for a week -> halve size
+  - any kill switch failing its weekly dry run -> no quoting until fixed
+  - daily loss beyond $20 -> stop for the day; weekly loss beyond $50 -> full review before trading again
+  - a series' fee_type or multiplier changes -> recompute fee-adjusted Kelly; requote only if still positive
+note: Changing any threshold requires a new id and a written reason. Stopping is a result, not a failure.

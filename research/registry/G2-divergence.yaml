@@ -1,0 +1,11 @@
+id: G2-divergence
+registered: 2026-10-06
+hypothesis: Kalshi mids sit far enough from devigged Pinnacle often enough to be worth quoting around.
+data: Kalshi mid from the tape; Pinnacle h2h/spreads/totals from the Odds API, devigged with the power method
+metric: "absolute gap between devigged Pinnacle and the Kalshi mid, per side per minute, from market open to kickoff,
+  minus half the Kalshi spread; reported as side-hours per NFL week above the threshold"
+go: several dozen side-hours per NFL week with a gap >= 2c beyond half the spread
+no_go: distribution matches BetFirm's 0.9c average with no persistent tail
+min_sample: 3 full NFL weeks (Weeks 6-8)
+earliest_read: 2026-11-02
+owners: {runs: quant-analyst, reviews: red-team, decides: ashmit}

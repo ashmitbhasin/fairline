@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Fairline ---
+# API keys and private keys never leave this machine.
+secrets/
+*.pem
+*.key
+# Raw market data stays private (Kalshi Developer Agreement §3.1 bars redistribution).
+data/
