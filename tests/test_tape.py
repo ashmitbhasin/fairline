@@ -106,3 +106,28 @@ def test_writer_rotates_hourly_and_compresses(tmp_path):
             break
         time.sleep(0.05)
     assert json.loads(gzip.decompress(gz.read_bytes()))["x"] == 1
+
+
+# --- outage handling ----------------------------------------------------------
+
+class _DownREST:
+    async def open_events(self, series):
+        raise OSError("[Errno 8] nodename nor servname provided, or not known")
+
+
+class _Log:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, *args, **kwargs):
+        self.warnings.append(args)
+
+
+async def test_discovery_failure_keeps_previous_markets():
+    from tape.discover import discover_or_keep
+
+    previous = [{"ticker": "KXNFLGAME-26OCT08TBDAL-DAL"}]
+    log = _Log()
+    markets, refreshed = await discover_or_keep(_DownREST(), ["nfl"], 6, previous, log)
+    assert markets == previous and refreshed is False
+    assert log.warnings  # the outage is logged, not raised

@@ -17,6 +17,9 @@ An agent-run market-making desk for sports prediction markets. It borrows the sh
 | `fairvalue/fees.py` | Kalshi taker and maker fees, break-even, fractional Kelly. |
 | `research/registry/` | Gates G1–G7 and kill criteria, committed before the data they judge. |
 | `config/blocklist.yaml` | Markets the desk must never trade (Indiana University teams). |
+| `tape/ctl.py` | Starts, stops and checks every service as a background process that survives VS Code restarts. |
+| `board/indexer.py` | Follows the tape and keeps `data/board.db` current: books, trades, Pinnacle fair values, health. |
+| `board/server.py` + `board/static/` | The live dashboard at http://127.0.0.1:8765 and its read-only JSON API. |
 
 Planned in the brief and not built yet: `ledger/`, `sim/`, `agents/`, `gateway/`, `evals/`, `infra/`, `dashboards/`.
 
@@ -31,7 +34,27 @@ cp .env.example .env        # then fill in keys; .env and secrets/ are git-ignor
 
 Put Kalshi private keys in `secrets/` (e.g. `secrets/kalshi-prod.pem`) and point `.env` at them.
 
-## Recording
+## Running everything
+
+```bash
+.venv/bin/python -m tape.ctl start     # recorders + board, as background processes
+.venv/bin/python -m tape.ctl status    # what's running, uptime, last data, last log line
+open http://127.0.0.1:8765             # the board
+.venv/bin/python -m tape.ctl stop      # stop everything (data is kept)
+```
+
+Or in VS Code: **Terminal → Run Task…** → *Start everything*, *Status*, *Open board*, *Restart board*, *Follow a log*, *Stop everything*.
+Services run detached from the terminal, so closing or updating VS Code no longer stops recording. Logs: `data/logs/<service>.log`.
+
+## The board
+
+A live trading screen over everything recorded: every NFL game, spread and total market with bid, ask, mid, size, last trade, today's volume and the change since the day's first quote; Pinnacle fair value and the gap to Kalshi wherever Pinnacle offers the identical line; a per-market chart (bid/ask band, mid, fair value, trades), the order book, the strike ladder, and a scrolling tape of moves and trades.
+
+- `data/board.db` (SQLite) is derived entirely from the tape. Rebuild it any time: `.venv/bin/python -m board.indexer --rebuild` (seconds).
+- Open the same file in any SQLite viewer for spreadsheet-style browsing. Tables: `market_state` (live), `top_of_book`, `trades`, `fair_history`, `games`, `markets`, `health`.
+- The server listens on 127.0.0.1 only; the data never leaves this machine.
+
+## Recording (individually)
 
 ```bash
 # See what will be recorded this week

@@ -1,0 +1,75 @@
+{
+  // Terminal → Run Task… Everything goes through tape.ctl, which runs the recorders and the board as
+  // background processes, so closing or updating VS Code no longer stops them.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start everything",
+      "detail": "Recorders (kalshi-live, kalshi-backup, odds) + board indexer + dashboard; skips anything already running",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "tape.ctl", "start"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false, "clear": true }
+    },
+    {
+      "label": "Status",
+      "detail": "Which services are running, uptime, last data written, last log line",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "tape.ctl", "status"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false, "clear": true }
+    },
+    {
+      "label": "Open board",
+      "detail": "http://127.0.0.1:8765 in your default browser",
+      "type": "process",
+      "command": "open",
+      "args": ["http://127.0.0.1:8765"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "never" }
+    },
+    {
+      "label": "Restart board",
+      "detail": "Restart the indexer and dashboard (after pulling or editing board code); recorders keep running",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "tape.ctl", "restart", "board", "board-web"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false, "clear": true }
+    },
+    {
+      "label": "Follow a log",
+      "detail": "Stream one service's log (Ctrl+C to stop following; the service keeps running)",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "tape.ctl", "logs", "${input:service}"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "showReuseMessage": false, "clear": true }
+    },
+    {
+      "label": "Stop everything",
+      "detail": "Stops the recorders and the board. Data already recorded is kept.",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "tape.ctl", "stop"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false, "clear": true }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "service",
+      "type": "pickString",
+      "description": "Which service's log?",
+      "options": ["kalshi-live", "kalshi-backup", "odds", "board", "board-web"],
+      "default": "kalshi-live"
+    }
+  ]
+}

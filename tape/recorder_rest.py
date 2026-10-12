@@ -20,7 +20,7 @@ import logging
 import time
 
 from .config import LEAGUES, data_dir
-from .discover import discover, today_et
+from .discover import discover_or_keep
 from .kalshi_rest import KalshiREST
 from .writer import JsonlWriter, now_ms
 
@@ -53,10 +53,15 @@ async def run(args: argparse.Namespace) -> None:
     try:
         while True:
             if time.monotonic() >= next_discovery:
-                markets = await discover(rest, args.league, today_et(), args.days)
-                writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_markets", "markets": markets})
-                log.info("tracking %d markets", len(markets))
-                next_discovery = time.monotonic() + args.refresh_min * 60
+                found, refreshed = await discover_or_keep(rest, args.league, args.days, markets, log)
+                if refreshed:
+                    markets = found
+                    writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_markets", "markets": markets})
+                    log.info("tracking %d markets", len(markets))
+                    next_discovery = time.monotonic() + args.refresh_min * 60
+                else:
+                    writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_discovery_error"})
+                    next_discovery = time.monotonic() + 60
             tickers = sorted({m["ticker"] for m in markets})
             cycle_start = time.monotonic()
             written = 0

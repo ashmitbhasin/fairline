@@ -64,6 +64,19 @@ async def discover(rest: KalshiREST, leagues: list[str], start: dt.date, days: i
     return found
 
 
+async def discover_or_keep(rest: KalshiREST, leagues: list[str], days: int, previous: list[dict], log) -> tuple[list[dict], bool]:
+    """Discover markets, or keep `previous` if discovery fails. Returns (markets, refreshed).
+
+    Recorders call this on a timer. A network outage during discovery must never stop a recorder,
+    so any failure falls back to the last known market list.
+    """
+    try:
+        return await discover(rest, leagues, today_et(), days), True
+    except Exception as exc:
+        log.warning("market discovery failed (%r); keeping %d known markets", exc, len(previous))
+        return list(previous), False
+
+
 def save_market_list(markets: list[dict]) -> str:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = data_dir() / "meta" / f"markets_{stamp}.json"
