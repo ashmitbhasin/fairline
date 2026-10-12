@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fairline Board</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230a0d12'/%3E%3Cpath d='M3 11h3V7h4V4h3' stroke='%234ea1ff' stroke-width='1.8' fill='none'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand" title="Fairline Phase 0 · local board">
+      <svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12h3.5V7.5h4.5V4H14"/></svg>
+      <span class="word">FAIRLINE</span><span class="tag">board</span>
+    </div>
+    <div class="live" id="live" aria-live="polite"><span class="dot"></span><span id="live-text">Connecting…</span></div>
+    <div class="streams" id="streams"></div>
+    <div class="spacer"></div>
+    <div class="counters" id="counters"></div>
+    <div class="clock" id="clock" title="Eastern Time"></div>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <div class="layout" id="layout">
+    <aside class="games" aria-label="Games">
+      <div class="pane-head"><span>Games</span><span class="muted" id="games-count"></span></div>
+      <div class="games-list" id="games-list"></div>
+    </aside>
+
+    <main class="main">
+      <div class="toolbar">
+        <div class="seg" id="kind-filter" role="group" aria-label="Market type">
+          <button type="button" data-kind="all" class="on">All</button>
+          <button type="button" data-kind="winner">Winner</button>
+          <button type="button" data-kind="spread">Spread</button>
+          <button type="button" data-kind="total">Total</button>
+        </div>
+        <label class="check"><input type="checkbox" id="fair-only"><span>With fair value</span></label>
+        <div class="search">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
+          <input id="search" type="search" placeholder="Team, line or ticker" autocomplete="off" spellcheck="false" aria-label="Search markets">
+          <kbd>/</kbd>
+        </div>
+        <div class="spacer"></div>
+        <div class="muted small" id="row-count"></div>
+      </div>
+
+      <div class="table-wrap" id="table-wrap">
+        <table class="board" id="board">
+          <thead>
+            <tr>
+              <th data-sort="label" class="l">Market</th>
+              <th data-sort="bid" title="Best YES bid">Bid</th>
+              <th data-sort="ask" title="Best YES ask (1 − best NO bid)">Ask</th>
+              <th data-sort="mid">Mid</th>
+              <th data-sort="spread" title="Ask − bid, cents">Sprd</th>
+              <th data-sort="size" class="c-size" title="Contracts at the best bid × best ask">Size</th>
+              <th data-sort="last" title="Last trade price and taker side">Last</th>
+              <th data-sort="fair" title="Pinnacle price with the margin removed (power method). Shown only where Pinnacle offers the identical line.">Fair</th>
+              <th data-sort="gap" title="Fair − mid, in cents. Positive: Kalshi YES is cheaper than Pinnacle's fair price.">Gap</th>
+              <th data-sort="chg" class="c-chg" title="Mid change since the first quote today (ET)">Δ day</th>
+              <th data-sort="vol" title="Contracts traded today">Vol</th>
+              <th data-sort="upd" title="Time since the top of book last changed">Upd</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="empty" id="empty" hidden></div>
+      </div>
+    </main>
+
+    <aside class="drawer" id="drawer" hidden aria-label="Market detail"></aside>
+  </div>
+
+  <section class="tape" id="tape">
+    <button type="button" class="tape-head" id="tape-toggle" aria-expanded="true">
+      <span>Live tape</span><span class="muted small" id="tape-count"></span><span class="chev" aria-hidden="true"></span>
+    </button>
+    <ol class="tape-list" id="tape-list"></ol>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -21,7 +21,10 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["tape*", "fairvalue*"]
+include = ["tape*", "fairvalue*", "board*"]
+
+[tool.setuptools.package-data]
+board = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -66,7 +66,7 @@ async def run(args: argparse.Namespace) -> None:
                     sent = now_ms()
                     try:
                         resp = await client.get(f"{ODDS_API_BASE}/sports/{sport}/odds", params=params)
-                    except httpx.TransportError as exc:
+                    except Exception as exc:  # outages must not stop the poller
                         log.warning("%s request failed: %r", league, exc)
                         writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_poll_error", "league": league, "error": repr(exc)})
                         continue
@@ -76,7 +76,12 @@ async def run(args: argparse.Namespace) -> None:
                         log.error("%s HTTP %s: %s", league, resp.status_code, resp.text[:300])
                         writer.write({"recv_ts_ms": recv, "src": "recorder", "type": "_http_error", "league": league, "status": resp.status_code, "body": resp.text[:500], "usage": usage})
                         continue
-                    events = resp.json()
+                    try:
+                        events = resp.json()
+                    except ValueError as exc:
+                        log.warning("%s: unreadable response (%r)", league, exc)
+                        writer.write({"recv_ts_ms": recv, "src": "recorder", "type": "_bad_response", "league": league, "body": resp.text[:500]})
+                        continue
                     writer.write({"sent_ts_ms": sent, "recv_ts_ms": recv, "src": "odds_api", "league": league, "sport": sport, "usage": usage, "events": events})
                     kickoffs += kickoffs_from(events)
                     remaining = usage.get("x-requests-remaining")

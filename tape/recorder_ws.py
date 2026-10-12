@@ -24,7 +24,7 @@ import websockets
 
 from .book import SeqTracker
 from .config import KALSHI, LEAGUES, WS_SIGN_PATH, data_dir, kalshi_creds
-from .discover import discover, today_et
+from .discover import discover_or_keep
 from .kalshi_auth import auth_headers, load_private_key
 from .kalshi_rest import KalshiREST
 from .writer import JsonlWriter, now_ms
@@ -124,17 +124,28 @@ async def run(args: argparse.Namespace) -> None:
     private_key = load_private_key(creds.private_key_path)
     rest = KalshiREST(args.env)
     writer = JsonlWriter(data_dir(), "kalshi_ws")
+    markets: list[dict] = []
+    next_discovery = 0.0
     backoff = 1.0
     try:
+        # Never exits on its own: every failure is recorded, backed off and retried.
         while True:
-            markets = await discover(rest, args.league, today_et(), args.days)
+            if time.monotonic() >= next_discovery:
+                found, refreshed = await discover_or_keep(rest, args.league, args.days, markets, log)
+                if refreshed:
+                    markets = found
+                    writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_markets", "markets": markets})
+                    next_discovery = time.monotonic() + args.refresh_min * 60
+                else:
+                    writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_discovery_error"})
+                    next_discovery = time.monotonic() + 60
             tickers = sorted({m["ticker"] for m in markets})
-            writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_markets", "markets": markets})
             if not tickers:
-                log.info("no open markets in window; checking again in 10 min")
-                await asyncio.sleep(600)
+                wait = 600 if next_discovery - time.monotonic() > 60 else 60
+                log.info("no markets to record yet; checking again in %ds", wait)
+                await asyncio.sleep(wait)
+                next_discovery = 0.0
                 continue
-            log.info("recording %d markets", len(tickers))
             headers = auth_headers(creds.key_id, private_key, "GET", WS_SIGN_PATH)
             try:
                 async with websockets.connect(
@@ -142,15 +153,19 @@ async def run(args: argparse.Namespace) -> None:
                     additional_headers=headers,
                     ssl=SSL_CONTEXT,
                     ping_interval=20,
-                    ping_timeout=20,
+                    ping_timeout=60,  # 20 s dropped the connection on brief Wi-Fi stalls
                     max_size=2**24,
                 ) as ws:
                     writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_connected"})
-                    await Session(ws, tickers, writer).run(time.monotonic() + args.refresh_min * 60)
+                    log.info("recording %d markets", len(tickers))
                     backoff = 1.0
-            except (websockets.ConnectionClosed, OSError, websockets.InvalidStatus) as exc:
+                    await Session(ws, tickers, writer).run(next_discovery)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_disconnected", "error": repr(exc)})
-                log.warning("connection lost (%r); reconnecting in %.0fs", exc, backoff)
+                expected = isinstance(exc, (websockets.ConnectionClosed, OSError, websockets.InvalidStatus, asyncio.TimeoutError))
+                log.warning("connection lost (%r); reconnecting in %.0fs", exc, backoff, exc_info=not expected)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)
     finally:
