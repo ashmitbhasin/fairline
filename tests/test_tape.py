@@ -131,3 +131,19 @@ async def test_discovery_failure_keeps_previous_markets():
     markets, refreshed = await discover_or_keep(_DownREST(), ["nfl"], 6, previous, log)
     assert markets == previous and refreshed is False
     assert log.warnings  # the outage is logged, not raised
+
+
+async def test_sleep_wall_returns_by_the_wall_clock(monkeypatch):
+    import tape.odds_poller as op
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(op.time, "time", lambda: clock["t"])
+    naps = []
+
+    async def fake_sleep(s):
+        naps.append(s)
+        clock["t"] += 600 if len(naps) == 1 else s  # the Mac slept 10 min during the first nap
+
+    monkeypatch.setattr(op.asyncio, "sleep", fake_sleep)
+    await op.sleep_wall(900)
+    assert naps[0] == 15 and sum(naps[1:]) <= 300 + 1e-9  # caught up instead of waiting a full 900 s more
