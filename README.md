@@ -19,7 +19,9 @@ An agent-run market-making desk for sports prediction markets. It borrows the sh
 | `config/blocklist.yaml` | Markets the desk must never trade (Indiana University teams). |
 | `tape/ctl.py` | Starts, stops and checks every service as a background process that survives VS Code restarts. |
 | `board/indexer.py` | Follows the tape and keeps `data/board.db` current: books, trades, Pinnacle fair values, health. |
-| `board/server.py` + `board/static/` | The live dashboard at http://127.0.0.1:8765 and its read-only JSON API. |
+| `board/server.py` + `board/static/` | The live dashboard at http://127.0.0.1:8765 and its JSON API. |
+| `board/paper.py` | Paper trading over the tape: two rule ladders replayed minute by minute before kickoff, scored at Kalshi settlement (wins, losses, P&L, CLV); also measures the G2 gap. |
+| `board/tracker.py` + `board/static/tracker.js` | The Tracker tab: the paper record, the recorders right now, and history by day and by game (see below). |
 
 Planned in the brief and not built yet: `ledger/`, `sim/`, `agents/`, `gateway/`, `evals/`, `infra/`, `dashboards/`.
 
@@ -53,6 +55,29 @@ A live trading screen over everything recorded: every NFL game, spread and total
 - `data/board.db` (SQLite) is derived entirely from the tape. Rebuild it any time: `.venv/bin/python -m board.indexer --rebuild` (seconds).
 - Open the same file in any SQLite viewer for spreadsheet-style browsing. Tables: `market_state` (live), `top_of_book`, `trades`, `fair_history`, `games`, `markets`, `health`.
 - The server listens on 127.0.0.1 only; the data never leaves this machine.
+
+## The tracker
+
+The board's **Tracker** tab (http://127.0.0.1:8765/#tracker, or press `2`) shows only what the code produces. Nothing on it is typed in by hand.
+
+| Section | What it shows |
+|---|---|
+| **Record** | Paper bets the rules would have placed on the recorded tape, scored when Kalshi settled each market: W–L–T, P&L after fees, ROI, closing-line value (with a 95% interval), share that beat the close, the last 20 results, running P&L against what the bets were worth when placed, splits, and every bet. |
+| **Now** | Each service's state, the live recorder's last minute, upcoming games, and every market's edge right now after the taker fee. |
+| **History** | When the recorder could see (a 7-day chart of up and blind time against game windows), a table by day (messages, trades, data, uptime, crossed books, gap hours, bets, P&L), the Pinnacle-vs-Kalshi gap distribution, every game with Kalshi's and Pinnacle's closing prices, and the measures against the bars in `research/registry/`. |
+
+How the paper record is made (`board/paper.py`):
+
+- **Two rules, each at a fixed ladder of thresholds.** *Take* buys at the Kalshi price when devigged Pinnacle beats it by 0, 0.5, 1, 2 or 3¢ after the taker fee. *Quote* rests a bid and an offer 0.5, 1, 2 or 3¢ either side of fair, filled only when a trade prints through the quote (G4's trade-through rule). The 2¢ variants are the headline; the ladder shows where any edge appears. Click a rule to see its bets (or link to it: `#tracker/take@1`).
+- **Sizing and settlement.** 100 contracts a bet (fewer when the book showed less), one bet per market (one fill per side for quotes), held to settlement. Winner bets use the home team's market only. Kalshi's settled result is fetched from the public API once per market and cached in `data/tracker/settlements.json`. An NFL tie settles winner markets at 50¢ a side and counts as a tie.
+- **No look-ahead and no stale prices.**
+  - A Pinnacle price counts from the moment the poller received it.
+  - A Pinnacle line the Odds API hadn't refreshed for 5 minutes counts as pulled.
+  - The rules only act on a price under 5 minutes old, so mostly in the 3 hours before kickoff.
+  - Minutes when the recorder was blind, or the recorded book was crossed, are skipped.
+- Numbers recompute every 5 minutes in the background (the tape scan hourly). **Recompute** forces both.
+- Recorder uptime comes from the live recorder's once-a-minute heartbeat. Down means disconnected, or no sign of life for 3+ minutes (process stopped, Mac asleep, network gone).
+- Keys: `1` Markets · `2` Tracker · `↑` `↓` change rule.
 
 ## Recording (individually)
 

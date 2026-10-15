@@ -10,6 +10,12 @@ Endpoints (all GET, JSON):
     /api/depth?ticker=T                 top 10 price levels per side
     /api/sparks?tickers=A,B&range=24h   compact mid-price series for sparklines
 
+Tracker (what the code produces: paper record, live stats, history; see board/tracker.py):
+    GET  /api/tracker                   everything the Tracker tab draws
+    POST /api/tracker/refresh           recompute now instead of at the next 5-minute tick
+The POST requires the X-Fairline header and a same-origin request, so another website open in your
+browser cannot trigger it.
+
 Listens on 127.0.0.1 only: the data never leaves this machine (Kalshi's Developer Agreement §3.1
 bars redistributing it).
 """
@@ -30,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 from tape.config import data_dir
 
 from . import db
+from .tracker import Tracker
 
 log = logging.getLogger("board.server")
 STATIC = Path(__file__).resolve().parent / "static"
@@ -152,6 +159,7 @@ def downsample(points: list[list], limit: int) -> list[list]:
 
 class Handler(BaseHTTPRequestHandler):
     board: Board
+    tracker: Tracker | None = None
     server_version = "FairlineBoard/1.0"
 
     def log_message(self, fmt, *args):  # keep the terminal quiet; errors are logged explicitly
@@ -184,6 +192,10 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/sparks":
                 tickers = [t for t in q.get("tickers", "").split(",") if t]
                 return self._json(self.board.sparks(tickers, q.get("range", "24h")))
+            if url.path == "/api/tracker":
+                if not self.tracker:
+                    raise FileNotFoundError("tracker")
+                return self._json(self.tracker.snapshot())
             return self._static(url.path)
         except FileNotFoundError:
             return self._json({"error": "no_database", "detail": "board.db does not exist yet. Start the indexer: python -m board.indexer"}, 503)
@@ -196,6 +208,30 @@ class Handler(BaseHTTPRequestHandler):
             return None
         except Exception as exc:
             log.exception("unhandled error on %s", self.path)
+            return self._json({"error": "internal", "detail": repr(exc)}, 500)
+
+    # ---------- tracker ----------
+    def _same_origin(self) -> bool:
+        """Block cross-site requests: browsers always send Origin on POST, and a custom header forces a
+        CORS preflight this server never approves."""
+        if self.headers.get("X-Fairline") != "1":
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin == f"http://{self.headers.get('Host', '')}"
+
+    def do_POST(self):  # noqa: N802 (http.server API)
+        url = urlparse(self.path)
+        try:
+            if url.path != "/api/tracker/refresh":
+                return self._json({"error": "not_found"}, 404)
+            if not self._same_origin():
+                return self._json({"error": "forbidden", "detail": "cross-origin or missing X-Fairline header"}, 403)
+            started = self.tracker.request_refresh() if self.tracker else False
+            return self._json({"started": started, "refreshing": bool(self.tracker and self.tracker.refreshing)})
+        except (BrokenPipeError, ConnectionResetError):
+            return None
+        except Exception as exc:
+            log.exception("unhandled error on POST %s", self.path)
             return self._json({"error": "internal", "detail": repr(exc)}, 500)
 
     def _static(self, path: str) -> None:
@@ -216,6 +252,8 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     Handler.board = Board(data_dir() / "board.db")
+    Handler.tracker = Tracker(data_dir(), data_dir() / "board.db")
+    Handler.tracker.start()
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     httpd.daemon_threads = True
     url = f"http://127.0.0.1:{args.port}"

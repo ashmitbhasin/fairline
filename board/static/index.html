@@ -13,6 +13,10 @@
       <svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12h3.5V7.5h4.5V4H14"/></svg>
       <span class="word">FAIRLINE</span><span class="tag">board</span>
     </div>
+    <nav class="views" role="tablist" aria-label="View">
+      <button type="button" role="tab" id="tab-markets" data-view="markets" aria-selected="true" aria-controls="layout" title="Live markets (1)">Markets</button>
+      <button type="button" role="tab" id="tab-tracker" data-view="tracker" aria-selected="false" aria-controls="tracker" title="Paper record, live stats and history (2)">Tracker</button>
+    </nav>
     <div class="live" id="live" aria-live="polite"><span class="dot"></span><span id="live-text">Connecting…</span></div>
     <div class="streams" id="streams"></div>
     <div class="spacer"></div>
@@ -73,6 +77,10 @@
     <aside class="drawer" id="drawer" hidden aria-label="Market detail"></aside>
   </div>
 
+  <section class="tracker" id="tracker" hidden aria-label="Tracker">
+    <div class="tk" id="tk"><p class="tk-empty">Loading…</p></div>
+  </section>
+
   <section class="tape" id="tape">
     <button type="button" class="tape-head" id="tape-toggle" aria-expanded="true">
       <span>Live tape</span><span class="muted small" id="tape-count"></span><span class="chev" aria-hidden="true"></span>
@@ -81,5 +89,6 @@
   </section>
 
   <script src="/app.js"></script>
+  <script src="/tracker.js"></script>
 </body>
 </html>
