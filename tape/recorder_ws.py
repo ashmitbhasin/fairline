@@ -110,6 +110,8 @@ class Session:
                 await self.handle(raw)
             if time.monotonic() >= next_report:
                 log.info("last 60s: %s", self.stats)
+                # Heartbeat in the tape itself: proves the session was alive even when no market moved.
+                self.writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_heartbeat", "stats": self.stats})
                 self.stats = dict.fromkeys(self.stats, 0)
                 next_report = time.monotonic() + 60
 

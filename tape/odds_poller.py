@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import datetime as dt
 import logging
+import time
 
 import httpx
 
@@ -23,6 +24,17 @@ from .writer import JsonlWriter, now_ms
 log = logging.getLogger("odds_poller")
 MARKETS = "h2h,spreads,totals"
 GAME_LENGTH = dt.timedelta(hours=3, minutes=30)
+
+
+RETRY_S = 60.0
+
+
+async def sleep_wall(seconds: float, step: float = 15.0) -> None:
+    """Sleep by the wall clock. asyncio.sleep runs on a monotonic clock that stops while a Mac sleeps,
+    so a 30-minute wait could last hours; waking in short steps catches up as soon as the Mac does."""
+    deadline = time.time() + seconds
+    while (left := deadline - time.time()) > 0:
+        await asyncio.sleep(min(step, left))
 
 
 def next_interval(now: dt.datetime, kickoffs: list[dt.datetime], fast: float, slow: float, window: dt.timedelta, live: bool) -> float:
@@ -49,11 +61,12 @@ async def run(args: argparse.Namespace) -> None:
         raise SystemExit("No ODDS_API_KEY in .env. Sign up at the-odds-api.com and add it.")
     writer = JsonlWriter(data_dir(), "odds")
     window = dt.timedelta(hours=args.window_h)
+    known: dict[str, list[dt.datetime]] = {}  # last good kickoff list per league, kept across failed polls
     async with httpx.AsyncClient(timeout=20) as client:
         try:
             while True:
-                kickoffs: list[dt.datetime] = []
                 remaining = None
+                failed = False
                 for league in args.league:
                     sport = LEAGUES[league]["odds_sport"]
                     params = {
@@ -69,28 +82,34 @@ async def run(args: argparse.Namespace) -> None:
                     except Exception as exc:  # outages must not stop the poller
                         log.warning("%s request failed: %r", league, exc)
                         writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_poll_error", "league": league, "error": repr(exc)})
+                        failed = True
                         continue
                     recv = now_ms()
                     usage = {h: resp.headers.get(h) for h in ("x-requests-remaining", "x-requests-used", "x-requests-last")}
                     if resp.status_code != 200:
                         log.error("%s HTTP %s: %s", league, resp.status_code, resp.text[:300])
                         writer.write({"recv_ts_ms": recv, "src": "recorder", "type": "_http_error", "league": league, "status": resp.status_code, "body": resp.text[:500], "usage": usage})
+                        failed = resp.status_code >= 500 or failed  # 4xx (bad key, quota) won't fix itself in a minute
                         continue
                     try:
                         events = resp.json()
                     except ValueError as exc:
                         log.warning("%s: unreadable response (%r)", league, exc)
                         writer.write({"recv_ts_ms": recv, "src": "recorder", "type": "_bad_response", "league": league, "body": resp.text[:500]})
+                        failed = True
                         continue
                     writer.write({"sent_ts_ms": sent, "recv_ts_ms": recv, "src": "odds_api", "league": league, "sport": sport, "usage": usage, "events": events})
-                    kickoffs += kickoffs_from(events)
+                    known[league] = kickoffs_from(events)
                     remaining = usage.get("x-requests-remaining")
                     log.info("%s: %d events, credits remaining %s", league, len(events), remaining)
+                kickoffs = [k for ks in known.values() for k in ks]
                 interval = next_interval(dt.datetime.now(dt.timezone.utc), kickoffs, args.fast, args.slow, window, args.live)
+                if failed:
+                    interval = min(interval, RETRY_S)  # a failed poll is retried soon, not at the slow cadence
                 if remaining is not None and float(remaining) < args.reserve:
                     log.warning("only %s credits left (reserve %d): slowing to %ds", remaining, args.reserve, args.slow)
                     interval = args.slow
-                await asyncio.sleep(interval)
+                await sleep_wall(interval)
         finally:
             writer.close()
 

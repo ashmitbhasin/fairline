@@ -848,7 +848,8 @@
       store.set("tapeClosed", closed);
     });
     document.addEventListener("keydown", (e) => {
-      const typing = e.target.matches("input, textarea");
+      if (document.body.classList.contains("view-tracker")) return; // the tracker handles its own keys
+      const typing = e.target.matches("input, textarea, select");
       if (e.key === "/" && !typing) { e.preventDefault(); $("search").focus(); $("search").select(); return; }
       if (e.key === "Escape") {
         if (typing && e.target.value) { e.target.value = ""; S.filter.q = ""; renderRows(); return; }
