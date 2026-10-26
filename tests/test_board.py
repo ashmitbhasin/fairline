@@ -285,6 +285,19 @@ def test_indexer_replays_closed_hours_into_database(tmp_path, monkeypatch):
     idx.conn.close()
 
 
+def test_follow_starts_after_the_last_replayed_hour(tmp_path, monkeypatch):
+    """Hours copied down from the EC2 recorder after start-up are still read, never skipped."""
+    monkeypatch.setenv("FAIRLINE_DATA_DIR", str(tmp_path))
+    from board.indexer import Indexer
+
+    _hour(tmp_path, "kalshi_ws", "2026-10-07", "17").write_text(json.dumps(markets_record(T0)) + "\n")
+    idx = Indexer()
+    starts = idx.replay()
+    assert starts["kalshi_ws"] == ("2026-10-07", "18")
+    assert starts["odds"] is None  # nothing replayed yet: follow every hour that arrives
+    idx.conn.close()
+
+
 def test_resume_boundary_is_decided_by_receive_time():
     s = BoardState(history_after_ms=T0 + 1500)
     s.apply_ws(snapshot(T0 + 1000))  # already stored before the restart

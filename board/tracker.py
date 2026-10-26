@@ -208,7 +208,8 @@ def _overlap(intervals: list[tuple[int, int]], spans: list[tuple[int, int]]) -> 
 
 def log_heartbeats(log_path: Path, since_ms: int = 0) -> list[int]:
     """Timestamps of the live recorder's once-a-minute status lines (written by every connected session,
-    even when no market moves). Times in the log are this Mac's local time."""
+    even when no market moves). Times in the log are local time: the Mac's, or the EC2 recorder's, which
+    infra/setup.sh sets to Eastern to match."""
     out = []
     try:
         with log_path.open("r", errors="replace") as fh:

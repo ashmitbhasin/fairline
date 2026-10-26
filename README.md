@@ -17,13 +17,14 @@ An agent-run market-making desk for sports prediction markets. It borrows the sh
 | `fairvalue/fees.py` | Kalshi taker and maker fees, break-even, fractional Kelly. |
 | `research/registry/` | Gates G1–G7 and kill criteria, committed before the data they judge. |
 | `config/blocklist.yaml` | Markets the desk must never trade (Indiana University teams). |
-| `tape/ctl.py` | Starts, stops and checks every service as a background process that survives VS Code restarts. |
+| `tape/ctl.py` | Starts, stops and checks every service as a background process that survives VS Code restarts (under systemd on EC2). |
+| `infra/` | The EC2 recorder: `fl` drives it from the laptop, `setup.sh` and `fairline@.service` run on the server. |
 | `board/indexer.py` | Follows the tape and keeps `data/board.db` current: books, trades, Pinnacle fair values, health. |
 | `board/server.py` + `board/static/` | The live dashboard at http://127.0.0.1:8765 and its JSON API. |
 | `board/paper.py` | Paper trading over the tape: two rule ladders replayed minute by minute before kickoff, scored at Kalshi settlement (wins, losses, P&L, CLV); also measures the G2 gap. |
 | `board/tracker.py` + `board/static/tracker.js` | The Tracker tab: the paper record, the recorders right now, and history by day and by game (see below). |
 
-Planned in the brief and not built yet: `ledger/`, `sim/`, `agents/`, `gateway/`, `evals/`, `infra/`, `dashboards/`.
+Planned in the brief and not built yet: `ledger/`, `sim/`, `agents/`, `gateway/`, `evals/`, `dashboards/`.
 
 ## Setup
 
@@ -47,6 +48,21 @@ open http://127.0.0.1:8765             # the board
 
 Or in VS Code: **Terminal → Run Task…** → *Start everything*, *Status*, *Open board*, *Restart board*, *Follow a log*, *Stop everything*.
 Services run detached from the terminal, so closing or updating VS Code no longer stops recording. Logs: `data/logs/<service>.log`.
+
+## Running on EC2
+
+The laptop sleeps, so the recorders live on a small always-on server: a t4g.micro running Ubuntu 24.04 in us-east-1, with a 20 GB encrypted disk and a fixed IP (about $11 a month). systemd runs each recorder as `fairline@<name>`, restarts it if it exits and starts it on boot. The board and tracker stay on the laptop: the `pull` service copies the server's closed tape hours and recorder logs into `data/` every 10 minutes, so the board runs up to about an hour behind the server. SSH is open only to the IPs you allow.
+
+```bash
+aws login                   # once per AWS session; only up and allow-ip need it
+infra/fl up                 # instance, SSH key (~/.ssh/fairline.pem), firewall, fixed IP
+infra/fl install            # code, .env and secrets/ to the server; Python, swap, Eastern time, systemd
+infra/fl cutover            # stop the laptop's recorders, hand the open hour over, start them on the server
+```
+
+Day to day: `infra/fl status`, `infra/fl logs kalshi-live`, `infra/fl deploy` after changing recorder code, `infra/fl pull` to copy the tape down now, `infra/fl allow-ip` after changing networks. The same are under **Run Task… → EC2: …**. Once the server exists, `tape.ctl start` on the laptop starts the board and `pull` only; name a recorder to run it here as a fallback (that spends Odds API credits twice while the server also records).
+
+The instance has termination protection and its disk is kept if the instance is ever deleted. The Kalshi key copied to the server can trade: SSH takes only the key in ~/.ssh/fairline.pem, from the IPs you allowed, and `.env` and `secrets/` are readable only by the ubuntu user.
 
 ## The board
 
@@ -95,7 +111,7 @@ How the paper record is made (`board/paper.py`):
 .venv/bin/python -m tape.odds_poller --league nfl
 ```
 
-Run the recorders in separate terminals and leave them running. Files land in `data/raw/<stream>/<YYYY-MM-DD>/<HH>.jsonl` (UTC), gzipped once each hour closes. A sleeping laptop stops recording, so keep it awake and plugged in on game days until the recorder moves to EC2 (Week 2).
+Run the recorders in separate terminals and leave them running. Files land in `data/raw/<stream>/<YYYY-MM-DD>/<HH>.jsonl` (UTC), gzipped once each hour closes. A sleeping laptop stops recording; see [Running on EC2](#running-on-ec2).
 
 ## Facts the code relies on (checked 2026-10-06)
 

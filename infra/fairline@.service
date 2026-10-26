@@ -1,0 +1,21 @@
+# One unit per service: fairline@kalshi-live, fairline@kalshi-backup, fairline@odds, fairline@board,
+# fairline@board-web. Installed by infra/setup.sh. Restarts anything that exits, and starts on boot.
+[Unit]
+Description=fairline %i
+After=network-online.target time-sync.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/fairline
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/fairline/.venv/bin/python -m tape.ctl run %i
+StandardOutput=append:/home/ubuntu/fairline/data/logs/%i.log
+StandardError=inherit
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
