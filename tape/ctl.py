@@ -5,6 +5,7 @@
     python -m tape.ctl stop             # stop everything (or name some: stop odds board-web)
     python -m tape.ctl restart board    # stop + start (picks up code changes)
     python -m tape.ctl logs kalshi-live # follow one service's log
+    python -m tape.ctl run kalshi-live  # run one service in the foreground (what systemd calls on EC2)
 
 Services: kalshi-live, kalshi-backup, odds (recorders); board (indexer -> data/board.db) and
 board-web (dashboard at http://127.0.0.1:8765).
@@ -12,12 +13,19 @@ board-web (dashboard at http://127.0.0.1:8765).
 Each recorder runs in its own session (detached from the terminal that started it), writes its
 PID to data/run/<name>.pid and its output to data/logs/<name>.log. While kalshi-live runs,
 `caffeinate` holds the Mac awake on power. Closing the lid still sleeps the Mac.
+
+On the EC2 recorder (infra/) systemd runs each service as fairline@<name> and restarts it if it
+dies; there start/stop/restart go through systemctl and status reads the same PID files. Once
+infra/fl has set up that server, the laptop runs only the board and `pull`, which copies the
+server's closed tape hours and recorder logs down every 10 minutes; recorders start here only when
+named (a fallback that also spends Odds API credits twice if the server is recording).
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -43,8 +51,12 @@ BOARD: dict[str, dict] = {
     "board": {"module": "board.indexer", "args": [], "stream": None},
     "board-web": {"module": "board.server", "args": [], "stream": None, "url": "http://127.0.0.1:8765"},
 }
-SERVICES: dict[str, dict] = {**RECORDERS, **BOARD}
-AWAKE = "caffeinate"
+PULL: dict[str, dict] = {"pull": {"module": "tape.pull", "args": [], "stream": None}}
+SERVICES: dict[str, dict] = {**RECORDERS, **BOARD, **PULL}
+# Written by `infra/fl up` on the laptop only (git-ignored, never copied to the server).
+REMOTE_RECORDER = ROOT / "infra" / "ssh_config"
+AWAKE = "caffeinate" if sys.platform == "darwin" else None
+SYSTEMD_UNIT = Path("/etc/systemd/system/fairline@.service")
 
 
 def run_dir() -> Path:
@@ -112,7 +124,7 @@ def start(names: list[str]) -> int:
         )
         (run_dir() / f"{name}.pid").write_text(str(proc.pid))
         print(f"{name:14s} started (pid {proc.pid}), log: {log_path(name)}")
-        if name == "kalshi-live":
+        if name == "kalshi-live" and AWAKE:
             awake = subprocess.Popen([AWAKE, "-is", "-w", str(proc.pid)], start_new_session=True,
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             (run_dir() / "caffeinate.pid").write_text(str(awake.pid))
@@ -172,9 +184,10 @@ def _ago(seconds: float | None) -> str:
     return f"{seconds / 3600:.1f}h ago"
 
 
-def status(_: list[str]) -> int:
+def status(names: list[str]) -> int:
     down = 0
-    for name, spec in SERVICES.items():
+    for name in names:
+        spec = SERVICES[name]
         pid = read_pid(name)
         strays = stray_pids(spec["module"], pid)
         if pid:
@@ -193,6 +206,30 @@ def status(_: list[str]) -> int:
     return 1 if down else 0
 
 
+def default_names() -> list[str]:
+    if REMOTE_RECORDER.exists():
+        return [*BOARD, *PULL]
+    return [*RECORDERS, *BOARD]
+
+
+def run(names: list[str]) -> int:
+    """Become the service in this process (exec keeps the PID), for a supervisor such as systemd."""
+    name = names[0]
+    spec = SERVICES[name]
+    (run_dir() / f"{name}.pid").write_text(str(os.getpid()))
+    print(f"\n===== {dt.datetime.now():%Y-%m-%d %H:%M:%S} start {name} =====", flush=True)
+    os.chdir(ROOT)
+    os.execv(PYTHON, [PYTHON, "-m", spec["module"], *spec["args"]])
+
+
+def systemd(command: str, names: list[str]) -> int:
+    units = [f"fairline@{name}" for name in names]
+    code = subprocess.run(["sudo", "systemctl", command, *units]).returncode
+    time.sleep(3)
+    status(names)
+    return code
+
+
 def logs(names: list[str]) -> int:
     path = log_path(names[0])
     if not path.exists():
@@ -203,16 +240,20 @@ def logs(names: list[str]) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["start", "stop", "restart", "status", "logs"])
+    parser.add_argument("command", choices=["start", "stop", "restart", "status", "logs", "run"])
     parser.add_argument("names", nargs="*", choices=[[], *SERVICES], help="default: everything")
     args = parser.parse_args()
-    names = args.names or list(SERVICES)
-    if args.command == "logs" and len(names) != 1:
-        parser.error("logs takes exactly one name: " + ", ".join(SERVICES))
+    names = args.names or default_names()
+    if args.command in ("logs", "run") and len(names) != 1:
+        parser.error(f"{args.command} takes exactly one name: " + ", ".join(SERVICES))
+    if args.command == "status" and not args.names and REMOTE_RECORDER.exists():
+        print("recorders run on EC2: infra/fl status")
+    if args.command in ("start", "stop", "restart") and SYSTEMD_UNIT.exists() and shutil.which("systemctl"):
+        sys.exit(systemd(args.command, names))
     if args.command == "restart":
         stop(names)
         sys.exit(start(names))
-    sys.exit({"start": start, "stop": stop, "status": status, "logs": logs}[args.command](names))
+    sys.exit({"start": start, "stop": stop, "status": status, "logs": logs, "run": run}[args.command](names))
 
 
 if __name__ == "__main__":

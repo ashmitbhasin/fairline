@@ -22,7 +22,7 @@ from tape.config import data_dir
 
 from . import db
 from .state import ET, BoardState
-from .tapefiles import StreamTailer, key_for_ms, read_records, stream_files
+from .tapefiles import StreamTailer, key_for_ms, next_key, read_records, stream_files
 
 log = logging.getLogger("board.indexer")
 STREAMS = ("kalshi_ws", "kalshi_rest", "odds")
@@ -111,7 +111,9 @@ class Indexer:
                 log.info("  replayed %s %s:00 UTC (%d/%d hours, %d records, %.0fs)", hour[0], hour[1], i, len(hours), count, time.time() - started)
         if bad:
             log.warning("skipped %d unreadable tape lines during replay", bad)
-        return {s: now_key for s in STREAMS}
+        # Follow from the hour after the last one replayed, not from now: when the tape is copied down
+        # from the EC2 recorder, closed hours can land after this replay and must still be read.
+        return {s: next_key(max(files[s])) if files[s] else starts[s] for s in STREAMS}
 
     def finish_resume(self) -> None:
         now = dt.datetime.now(ET)

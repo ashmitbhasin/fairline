@@ -5,7 +5,7 @@
   "tasks": [
     {
       "label": "Start everything",
-      "detail": "Recorders (kalshi-live, kalshi-backup, odds) + board indexer + dashboard; skips anything already running",
+      "detail": "Board indexer + dashboard, and the tape pull from EC2 (or the recorders here if there is no server); skips anything already running",
       "type": "process",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "tape.ctl", "start"],
@@ -61,6 +61,42 @@
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false, "clear": true }
+    },
+    {
+      "label": "EC2: Status",
+      "detail": "Which services are running on the EC2 recorder",
+      "type": "process",
+      "command": "${workspaceFolder}/infra/fl",
+      "args": ["status"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false, "clear": true }
+    },
+    {
+      "label": "EC2: Follow a log",
+      "detail": "Stream one server recorder's log (Ctrl+C to stop following)",
+      "type": "process",
+      "command": "${workspaceFolder}/infra/fl",
+      "args": ["logs", "${input:service}"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "showReuseMessage": false, "clear": true }
+    },
+    {
+      "label": "EC2: Deploy",
+      "detail": "Copy code changes to the server and restart its recorders",
+      "type": "process",
+      "command": "${workspaceFolder}/infra/fl",
+      "args": ["deploy"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false, "clear": true }
+    },
+    {
+      "label": "EC2: Pull tape now",
+      "detail": "Copy the server's closed tape hours and recorder logs into this laptop's data/ (the pull service does this every 10 minutes)",
+      "type": "process",
+      "command": "${workspaceFolder}/infra/fl",
+      "args": ["pull"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false, "clear": true }
     }
   ],
   "inputs": [
@@ -68,7 +104,7 @@
       "id": "service",
       "type": "pickString",
       "description": "Which service's log?",
-      "options": ["kalshi-live", "kalshi-backup", "odds", "board", "board-web"],
+      "options": ["kalshi-live", "kalshi-backup", "odds", "board", "board-web", "pull"],
       "default": "kalshi-live"
     }
   ]

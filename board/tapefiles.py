@@ -59,6 +59,11 @@ def key_for_ms(ts_ms: int) -> Key:
     return (t.strftime("%Y-%m-%d"), t.strftime("%H"))
 
 
+def next_key(key: Key) -> Key:
+    t = dt.datetime.strptime(f"{key[0]} {key[1]}", "%Y-%m-%d %H").replace(tzinfo=dt.timezone.utc)
+    return key_for_ms(int((t + dt.timedelta(hours=1)).timestamp() * 1000))
+
+
 class StreamTailer:
     def __init__(self, root: Path, stream: str, start: Key | None = None):
         self.root = Path(root)
