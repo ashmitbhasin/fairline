@@ -226,3 +226,41 @@ def test_report_lists_only_the_recorders(tmp_path):
     out = recorder_report(tmp_path)
     assert [s["name"] for s in out["services"]] == ["kalshi-live", "kalshi-backup", "odds"]
     assert out["disk"]["total"] > 0
+
+
+def test_ec2_minutes_not_yet_copied_count_neither_way(tmp_path, monkeypatch):
+    from board.tracker import LAST_PULL, known_until
+    _remote(tmp_path, monkeypatch, exists=False)
+    assert known_until(tmp_path, T0) == T0  # recorders on this machine: judged up to now
+    _remote(tmp_path, monkeypatch)
+    assert known_until(tmp_path, T0) == T0  # never copied yet: nothing to stop at
+    (tmp_path / "run" / LAST_PULL).write_text(json.dumps({"ts_ms": T0 - MIN, "ok": False, "ok_ms": T0 - 8 * MIN}))
+    known = known_until(tmp_path, T0)
+    assert known == T0 - 8 * MIN  # the last copy that worked
+    beats = [T0 - 60 * MIN + i * MIN for i in range(52)]  # heartbeats up to the last copy
+    assert blind_spots([], beats, known) == []
+    assert blind_spots([], beats, T0) != []  # judged up to now, the uncopied minutes looked blind
+
+
+def test_pull_records_the_last_good_copy_and_asks_for_a_rescan(tmp_path, monkeypatch):
+    from tape import pull
+    calls = []
+    monkeypatch.setattr(pull, "recompute", lambda: calls.append("rescan"))
+    ok = type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    bad = type("P", (), {"returncode": 255, "stdout": "", "stderr": "ssh: Network is unreachable"})()
+    monkeypatch.setattr(pull.subprocess, "run", lambda *a, **k: ok)
+    assert pull.pull(tmp_path) is True
+    first = json.loads((tmp_path / "last-pull.json").read_text())
+    assert first["ok_ms"] == first["ts_ms"] and calls == ["rescan"]
+    monkeypatch.setattr(pull.subprocess, "run", lambda *a, **k: bad)
+    assert pull.pull(tmp_path) is False
+    second = json.loads((tmp_path / "last-pull.json").read_text())
+    assert second["ok"] is False and second["ok_ms"] == first["ok_ms"] and calls == ["rescan"]
+
+
+def test_a_rescan_asked_for_mid_recompute_is_queued_not_dropped(tmp_path):
+    from board.tracker import Tracker
+    tr = Tracker(tmp_path, tmp_path / "board.db", fetch=lambda tickers: {})
+    tr.refreshing = True
+    assert tr.request_refresh() is False
+    assert tr.force_tape is True and tr.wake.is_set()

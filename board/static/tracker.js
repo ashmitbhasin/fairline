@@ -327,7 +327,8 @@
     const head = `<section class="tk-sec" id="tk-history"><h2>History</h2><p class="dek">Everything recorded so far, by day and by game.</p>`;
     if (!t.per_day) return head + `<p class="tk-empty">Scanning the tape…</p></section>`;
     const up = t.uptime || {};
-    const upLine = up.available ? `${pct(up.uptime, 1)} of the last 7 days, ${pct(up.game_uptime, 1)} inside game windows (4 h before kickoff to the final)` : esc(up.reason || "");
+    const through = t.known_until_ms && t.scanned_ms - t.known_until_ms > 60_000 ? `, measured through ${esc(when(t.known_until_ms))} (the last copy from EC2)` : "";
+    const upLine = up.available ? `${pct(up.uptime, 1)} of the last 7 days, ${pct(up.game_uptime, 1)} inside game windows (4 h before kickoff to the final)${through}` : esc(up.reason || "");
     const v = current();
     return head + `
       <h3 class="tk-h">When the recorder could see <span>${upLine}</span></h3>
