@@ -9,7 +9,8 @@
 #   status     tape.ctl status on the server
 #   logs NAME  follow one recorder's log on the server
 #   pull       copy the server's closed tape hours and recorder logs into this laptop's data/
-#              (the `pull` service in tape.ctl does this every 10 minutes)
+#   report     the recorders' state on the server, as JSON
+#              (the `pull` service in tape.ctl runs report every minute and pull every 10 minutes)
 #   ssh        a shell on the server
 #
 # The server runs the recorders only; the board and tracker run on the laptop over the pulled tape.
@@ -28,8 +29,8 @@ RECORDERS="kalshi-live kalshi-backup odds"
 AMI_PARAM=/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
 
 aws_() { aws --region "$REGION" "$@"; }
-ssh_() { ssh -F "$SSHCFG" fairline "$@"; }
-rsync_() { rsync -az -e "ssh -F $SSHCFG" "$@"; }
+ssh_() { ssh -F "$SSHCFG" -o ConnectTimeout=15 fairline "$@"; }
+rsync_() { rsync -az -e "ssh -F $SSHCFG -o ConnectTimeout=15" "$@"; }
 units() { for n in "$@"; do printf 'fairline@%s ' "$n"; done; }
 
 need_aws() {
@@ -189,6 +190,7 @@ case "${1:-}" in
   status) status ;;
   logs) need_host; ssh_ -t "cd ~/fairline && .venv/bin/python -m tape.ctl logs ${2:?which service?}" ;;
   pull) pull ;;
+  report) need_host; ssh_ 'cd ~/fairline && .venv/bin/python -m board.tracker report' ;;
   ssh) need_host; ssh -F "$SSHCFG" fairline ;;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

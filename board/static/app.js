@@ -8,6 +8,8 @@
     ["kalshi_rest", "Kalshi backup", 180_000],
     ["odds", "Odds", 2 * 3600_000 + 15 * 60_000],
   ];
+  // With the recorders on EC2 the tape arrives an hour at a time, copied every 10 minutes.
+  const REMOTE_STALE_MS = 75 * 60_000;
   const GAME_LENGTH = { nfl: 3.5 * 3600_000, nba: 2.75 * 3600_000 };
   const FAIR_STALE_MS = 2 * 3600_000 + 15 * 60_000;
   const INDEXER_STALE_MS = 15_000;
@@ -101,6 +103,7 @@
     S.lastSync = Date.now();
     S.lastTs = d.last_ts_ms;
     S.health = d.health || [];
+    S.remote = !!d.recorders_remote;
     S.games = new Map((d.games || []).map((g) => [g.key, g]));
   }
 
@@ -492,7 +495,7 @@
       const dataAge = h.last_ms ? t - h.last_ms : Infinity;
       let state = "ok";
       if (h.running === 0) state = "down";
-      else if (dataAge > staleMs || (key === "kalshi_ws" && h.connected === 0)) state = "warn";
+      else if (dataAge > (S.remote ? Math.max(staleMs, REMOTE_STALE_MS) : staleMs) || (key === "kalshi_ws" && h.connected === 0)) state = "warn";
       const extra = key === "odds" && h.credits ? ` · ${h.credits} cr` : "";
       const tip = [`${label}: ${h.running === 0 ? "recorder not running" : h.running === 1 ? "recorder running" : "recorder status unknown"}`,
         `last data ${age(h.last_ms)} ago`, h.per_min ? `${h.per_min}/min` : "", h.gaps_today ? `${h.gaps_today} gaps today` : "",
@@ -509,7 +512,7 @@
     let msg = "", bad = false;
     if (!S.online && S.lastSync) { msg = `Lost contact with the board server ${age(S.lastSync + S.skew)} ago. Retrying… If it stopped: <code>.venv/bin/python -m tape.ctl start board-web</code>`; bad = true; }
     else if (S.online && S.health.length && indexerAge > INDEXER_STALE_MS) { msg = `The indexer stopped updating ${age(t - indexerAge)} ago, so prices are frozen. Start it: <code>.venv/bin/python -m tape.ctl start board</code>`; bad = true; }
-    else if (down.length) msg = `Recorder not running: <b>${down.join(", ")}</b>. Start it: <code>.venv/bin/python -m tape.ctl start</code>`;
+    else if (down.length) msg = `Recorder not running: <b>${down.join(", ")}</b>. Check it: <code>.venv/bin/python -m tape.ctl status</code>`;
     banner.hidden = !msg;
     banner.className = "banner" + (bad ? " down" : "");
     setHTML(banner, msg);

@@ -160,3 +160,69 @@ def test_tracker_page_assets_are_served(server):
     assert 'id="tracker"' in html and "/tracker.js" in html
     js = urllib.request.urlopen(server + "/tracker.js")
     assert js.headers["Content-Type"].startswith("text/javascript")
+
+
+# ---------- Now: recorders on EC2 ----------
+
+def _remote(tmp_path, monkeypatch, exists=True):
+    from tape import ctl
+    cfg = tmp_path / "ssh_config"
+    if exists:
+        cfg.write_text("Host fairline\n")
+    monkeypatch.setattr(ctl, "REMOTE_RECORDER", cfg)
+    (tmp_path / "run").mkdir(exist_ok=True)
+
+
+def test_now_without_a_server_shows_local_recorders_and_no_pull(tmp_path, monkeypatch):
+    from board.tracker import now_services
+    _remote(tmp_path, monkeypatch, exists=False)
+    out = now_services(tmp_path, T0)
+    assert [s["name"] for s in out["services"]] == ["kalshi-live", "kalshi-backup", "odds", "board", "board-web"]
+    assert out["remote"] is None and out["disk"]["where"] == "this Mac"
+
+
+def test_now_shows_the_ec2_report_while_it_is_fresh(tmp_path, monkeypatch):
+    from board.tracker import EC2_NOW, LAST_PULL, now_services
+    _remote(tmp_path, monkeypatch)
+    report = {"ts_ms": T0 - MIN, "services": [{"name": "kalshi-live", "stream": "kalshi_ws", "running": True, "started_ms": T0 - 60 * MIN,
+                                                "last_data_ms": T0 - 1000, "url": None}],
+              "recorder": {"ts_ms": T0 - 30_000, "msgs": 2273}, "backup": {"ts_ms": T0, "markets": 650, "changed": 30},
+              "odds": {"remaining": 18539}, "disk": {"free": 14, "total": 19}}
+    (tmp_path / "run" / EC2_NOW).write_text(json.dumps(report))
+    (tmp_path / "run" / LAST_PULL).write_text(json.dumps({"ts_ms": T0, "ok": True}))
+    out = now_services(tmp_path, T0)
+    rows = {s["name"]: s for s in out["services"]}
+    assert list(rows) == ["kalshi-live", "kalshi-backup", "odds", "board", "board-web", "pull"]
+    assert rows["kalshi-live"]["running"] is True and rows["kalshi-live"]["where"] == "EC2"
+    assert rows["kalshi-backup"]["running"] is False  # missing from the report: not running there
+    assert rows["pull"]["last_pull"]["ok"] is True
+    assert out["recorder"]["msgs"] == 2273 and out["odds"]["remaining"] == 18539
+    assert out["disk"] == {"free": 14, "total": 19, "where": "EC2"} and out["remote"]["fresh"] is True
+
+
+def test_now_leaves_ec2_state_unknown_when_the_report_is_old(tmp_path, monkeypatch):
+    from board.tracker import EC2_NOW, now_services
+    _remote(tmp_path, monkeypatch)
+    (tmp_path / "run" / EC2_NOW).write_text(json.dumps({"ts_ms": T0 - 10 * MIN, "services": [{"name": "kalshi-live", "running": True}]}))
+    out = now_services(tmp_path, T0)
+    assert [s["running"] for s in out["services"][:3]] == [None, None, None]
+    assert out["remote"] == {"reported_ms": T0 - 10 * MIN, "fresh": False}
+    (tmp_path / "run" / EC2_NOW).unlink()
+    assert now_services(tmp_path, T0)["services"][0]["running"] is None
+
+
+def test_last_cycle_reads_the_backup_recorders_latest_poll(tmp_path):
+    from board.tracker import last_cycle
+    log = tmp_path / "kalshi-backup.log"
+    log.write_text("2026-10-26 18:12:06,879 INFO recorder_rest: tracking 650 markets\n"
+                   "2026-10-26 18:13:02,268 INFO recorder_rest: cycle: 650 markets, 30 changed books, fast mode\n")
+    out = last_cycle(log)
+    assert out["markets"] == 650 and out["changed"] == 30
+    assert last_cycle(tmp_path / "missing.log") is None
+
+
+def test_report_lists_only_the_recorders(tmp_path):
+    from board.tracker import recorder_report
+    out = recorder_report(tmp_path)
+    assert [s["name"] for s in out["services"]] == ["kalshi-live", "kalshi-backup", "odds"]
+    assert out["disk"]["total"] > 0

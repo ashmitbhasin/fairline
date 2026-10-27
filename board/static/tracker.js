@@ -78,9 +78,12 @@
     : `Rest a bid ${cnum(v.param)}¢ under fair and an offer ${cnum(v.param)}¢ over it, never crossing the book. Fills only when a trade prints through the quote; one fill per side per market.`);
   const KIND = { winner: "Winner", spread: "Spread", total: "Total" };
   const SERVICE = {
-    "kalshi-live": "Kalshi live", "kalshi-backup": "Kalshi backup", odds: "Pinnacle odds", board: "Indexer", "board-web": "Board server",
+    "kalshi-live": "Kalshi live", "kalshi-backup": "Kalshi backup", odds: "Pinnacle odds", board: "Indexer", "board-web": "Board server", pull: "Tape copy",
   };
-  const SOURCE = { "kalshi-live": "WebSocket, every book change", "kalshi-backup": "REST snapshots", odds: "The Odds API", board: "tape → board.db", "board-web": "this page" };
+  const SOURCE = {
+    "kalshi-live": "WebSocket, every book change", "kalshi-backup": "REST snapshots", odds: "The Odds API", board: "tape → board.db", "board-web": "this page",
+    pull: "EC2 → this Mac",
+  };
 
   // ---------- state ----------
   const K = { view: "markets", data: null, err: null, variant: store.get("variant", null), allBets: false, timer: null, loading: false, watch: false, computed: null };
@@ -167,7 +170,8 @@
     const ws = (n.health || []).find((h) => h.stream === "kalshi_ws");
     const lastSeen = Math.max(n.recorder?.ts_ms || 0, ws?.last_ms || 0);
     let state;
-    if (!live || !live.running) state = `<span class="off">Recorder stopped</span>`;
+    if (live && live.running === null) state = `<span class="off">No report from the EC2 recorder ${n.remote?.reported_ms ? `since ${esc(when(n.remote.reported_ms))}` : "yet"}</span>`;
+    else if (!live || !live.running) state = `<span class="off">Recorder stopped</span>`;
     else if (now - lastSeen > SILENT_MS) state = `<span class="off">Recorder silent since ${esc(when(lastSeen))}</span>`;
     else state = `<span><span class="on">Recording</span> · ${int(n.recorder?.msgs)} Kalshi messages in the last minute</span>`;
     const next = (n.upcoming || []).find((g) => g.kickoff_ms > now);
@@ -278,17 +282,20 @@
     const health = Object.fromEntries((n.health || []).map((h) => [h.stream, h]));
     const burn = T().odds_burn || {};
     const services = (n.services || []).map((s) => {
-      let state = s.running ? `<span class="state-ok">Running</span>` : `<span class="state-bad">Stopped</span>`;
+      let state = s.running === null ? `<span class="state-warn">No report</span>` : s.running ? `<span class="state-ok">Running</span>` : `<span class="state-bad">Stopped</span>`;
       if (s.running && s.stream && s.last_data_ms && now - s.last_data_ms > (s.stream === "odds" ? 40 * 60_000 : SILENT_MS)) state = `<span class="state-warn">Silent</span>`;
       let detail = "";
       if (s.name === "kalshi-live" && n.recorder && now - n.recorder.ts_ms < SILENT_MS) {
         detail = `${int(n.recorder.msgs)} messages, ${int(n.recorder.trades)} trades, ${int(n.recorder.gaps)} gaps last minute`;
         if (health.kalshi_ws?.disconnects_today) detail += ` · ${int(health.kalshi_ws.disconnects_today)} reconnects today`;
-      } else if (s.name === "kalshi-backup" && health.kalshi_rest) detail = `${int(health.kalshi_rest.per_min)} books a minute`;
+      } else if (s.running === null) detail = n.remote?.reported_ms ? `last report ${ago(n.remote.reported_ms, now)}` : "no report yet";
+      else if (s.name === "kalshi-backup" && n.backup) detail = `${int(n.backup.markets)} markets, ${int(n.backup.changed)} changed books last cycle`;
+      else if (s.name === "kalshi-backup" && health.kalshi_rest) detail = `${int(health.kalshi_rest.per_min)} books a minute`;
       else if (s.name === "odds" && n.odds) detail = `${int(n.odds.remaining)} credits left${burn.available ? `, ~${int(burn.per_day)} a day` : ""}`;
       else if (s.name === "board") detail = `board.db ${bytes(T().db_bytes)}`;
       else if (s.name === "board-web") detail = "serving this page";
-      return `<tr><td class="l">${esc(SERVICE[s.name] || s.name)}<span class="sub">${esc(SOURCE[s.name] || "")}</span></td><td class="l">${state}</td>
+      else if (s.name === "pull" && s.last_pull) detail = s.last_pull.ok ? `tape copied ${ago(s.last_pull.ts_ms, now)}` : `last copy failed ${ago(s.last_pull.ts_ms, now)}: ${s.last_pull.error || ""}`;
+      return `<tr><td class="l">${esc(SERVICE[s.name] || s.name)}<span class="sub">${esc(SOURCE[s.name] || "")}${s.where ? ` · on ${esc(s.where)}` : ""}</span></td><td class="l">${state}</td>
         <td>${s.stream ? ago(s.last_data_ms, now) : "—"}</td><td>${s.running && s.started_ms ? dur(now - s.started_ms) : "—"}</td><td class="l wrap">${esc(detail)}</td></tr>`;
     }).join("");
     const games = (n.upcoming || []).map((g) => {
@@ -301,8 +308,11 @@
       <td>${dur(r.kickoff_ms - now)}</td><td>${px(r.bid)}</td><td>${px(r.ask)}</td><td>${fairc(r.fair)}${r.pulled ? `<span class="sub warn">line not refreshed</span>` : ""}</td>
       <td class="${tone(r.gap)}">${cents(r.gap, 1)}</td>
       <td class="l">${r.side.toUpperCase()} at ${px(r.price)}</td><td class="${!e.stale && !r.pulled && r.edge >= e.threshold - 1e-9 ? "pos" : "dim"}">${cents(r.edge, 2)}</td></tr>`).join("");
-    const disk = n.disk ? `${bytes(n.disk.free)} free on this Mac` : "";
-    return `<h2>Now</h2><p class="dek">Live from the recorders and the board, refreshed every 15 seconds.</p>
+    const disk = n.disk ? `${bytes(n.disk.free)} free on ${n.disk.where || "this Mac"}` : "";
+    const dek = n.remote
+      ? `The recorders run on EC2 and report every minute${n.remote.reported_ms ? ` (last ${ago(n.remote.reported_ms, now)})` : ""}. The board here reads tape copied down every 10 minutes, so it runs up to an hour behind.`
+      : "Live from the recorders and the board, refreshed every 15 seconds.";
+    return `<h2>Now</h2><p class="dek">${dek}</p>
       <div class="tk-cols even">
         <div><h3 class="tk-h">Recorders <span>${esc(disk)}</span></h3><div class="xscroll"><table class="st"><thead><tr><th class="l">Service</th><th class="l">State</th><th>Last data</th><th>Up</th><th class="l"></th></tr></thead><tbody>${services}</tbody></table></div></div>
         <div><h3 class="tk-h">Next games</h3>${games ? `<div class="xscroll"><table class="st"><thead><tr><th class="l">Kickoff (ET)</th><th class="l">Game</th><th>Markets</th><th title="Markets with an identical Pinnacle line">Matched</th><th title="Contracts traded today across the game's markets">Volume today</th><th>Starts in</th></tr></thead><tbody>${games}</tbody></table></div>` : `<p class="tk-note">No games on the schedule.</p>`}</div>

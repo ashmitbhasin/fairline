@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import heapq
+from collections import deque
 import logging
 import signal
 import time
@@ -49,7 +50,29 @@ def merged(batches: dict[str, list[dict]]):
         yield stream, rec
 
 
+FOLLOW_BATCH = 50_000
+
+
+def take_aligned(buffers: dict[str, deque], caught_up: dict[str, bool]) -> dict[str, list[dict]]:
+    """Records safe to apply now: up to the earliest receive time any stream with a backlog has
+    reached. When tape arrives in hours at a time (copied down from EC2), a dense stream such as
+    kalshi_ws takes longer to read than the others; without this the others would race ahead, the
+    stored checkpoint (the latest receive time applied) would pass records not yet read, and a
+    restart would skip them."""
+    backlog = [buf[-1].get("recv_ts_ms") or 0 for s, buf in buffers.items() if buf and not caught_up[s]]
+    frontier = min(backlog) if backlog else None
+    out: dict[str, list[dict]] = {}
+    for s, buf in buffers.items():
+        take = []
+        while buf and (frontier is None or (buf[0].get("recv_ts_ms") or 0) <= frontier):
+            take.append(buf.popleft())
+        out[s] = take
+    return out
+
+
 def recorder_running(stream: str) -> bool | None:
+    """Running, stopped, or None when unknown. With the recorders on EC2 this is the server's latest
+    report (fetched every minute by the pull service), not a process on this machine."""
     try:
         from tape import ctl
     except Exception:
@@ -58,6 +81,13 @@ def recorder_running(stream: str) -> bool | None:
     spec = ctl.RECORDERS.get(name)
     if spec is None:
         return None
+    if ctl.REMOTE_RECORDER.exists():
+        from .tracker import ec2_report
+
+        report, fresh = ec2_report(data_dir(), int(time.time() * 1000))
+        if not fresh:
+            return None
+        return any(s.get("name") == name and s.get("running") for s in report.get("services", []))
     return bool(ctl.read_pid(name) or ctl.stray_pids(spec["module"], None))
 
 
@@ -132,10 +162,17 @@ class Indexer:
 
     def follow(self, starts: dict) -> None:
         tailers = {s: StreamTailer(self.root, s, start=starts[s]) for s in STREAMS}
+        buffers: dict[str, deque] = {s: deque() for s in STREAMS}
         last_flush = last_health = last_procs = 0.0
         log.info("live: following %s", ", ".join(STREAMS))
         while not self.stop:
-            batches = {s: t.poll(50_000) for s, t in tailers.items()}
+            caught_up = {}
+            for s, t in tailers.items():
+                want = FOLLOW_BATCH - len(buffers[s])
+                got = t.poll(want) if want > 0 else []
+                buffers[s].extend(got)
+                caught_up[s] = want > 0 and len(got) < want
+            batches = take_aligned(buffers, caught_up)
             n = 0
             for stream, rec in merged(batches):
                 apply(self.state, stream, rec)
