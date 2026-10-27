@@ -34,6 +34,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from tape.config import data_dir
+from tape.ctl import REMOTE_RECORDER
 
 from . import db
 from .tracker import Tracker
@@ -80,6 +81,7 @@ class Board:
             "last_ts_ms": int(db.get_meta(c, "last_ts_ms") or 0),
             "games": self._rows(c.execute("SELECT * FROM games ORDER BY kickoff_ms IS NULL, kickoff_ms, key")),
             "health": self._rows(c.execute("SELECT * FROM health ORDER BY stream")),
+            "recorders_remote": REMOTE_RECORDER.exists(),
         }
 
     def _tape(self, c, after_id: int = 0, limit: int = 150) -> list[dict]:

@@ -304,3 +304,34 @@ def test_resume_boundary_is_decided_by_receive_time():
     # Arrives after the checkpoint even though Kalshi stamped the change slightly earlier: must be kept.
     s.apply_ws(ws(T0 + 1600, "orderbook_delta", {"market_ticker": DAL, "price_dollars": "0.8000", "delta_fp": "4.00", "side": "yes", "ts_ms": T0 + 1400}, seq=2))
     assert [r[1] for r in s.drain()["tob"]] == [T0 + 1400]
+
+
+def test_recorder_state_comes_from_the_ec2_report(tmp_path, monkeypatch):
+    import time
+    from board.indexer import recorder_running
+    from tape import ctl
+    monkeypatch.setenv("FAIRLINE_DATA_DIR", str(tmp_path))
+    cfg = tmp_path / "ssh_config"
+    cfg.write_text("Host fairline\n")
+    monkeypatch.setattr(ctl, "REMOTE_RECORDER", cfg)
+    (tmp_path / "run").mkdir()
+    report = tmp_path / "run" / "ec2-now.json"
+    assert recorder_running("kalshi_ws") is None  # no report yet: unknown, not stopped
+    now = int(time.time() * 1000)
+    report.write_text(json.dumps({"ts_ms": now, "services": [{"name": "kalshi-live", "running": True}, {"name": "odds", "running": False}]}))
+    assert recorder_running("kalshi_ws") is True and recorder_running("odds") is False
+    report.write_text(json.dumps({"ts_ms": now - 10 * 60_000, "services": [{"name": "kalshi-live", "running": True}]}))
+    assert recorder_running("kalshi_ws") is None
+
+
+def test_follow_holds_fast_streams_until_a_lagging_one_catches_up():
+    from collections import deque
+    from board.indexer import take_aligned
+    ws = deque({"recv_ts_ms": T0 + i * 1000} for i in range(5))  # backlog: more of this hour still unread
+    rest = deque({"recv_ts_ms": T0 + i * 10_000} for i in range(5))  # caught up, but ahead in time
+    out = take_aligned({"kalshi_ws": ws, "kalshi_rest": rest}, {"kalshi_ws": False, "kalshi_rest": True})
+    assert len(out["kalshi_ws"]) == 5
+    assert [r["recv_ts_ms"] for r in out["kalshi_rest"]] == [T0]  # nothing past ws's frontier (T0 + 4 s)
+    assert len(rest) == 4
+    out = take_aligned({"kalshi_ws": ws, "kalshi_rest": rest}, {"kalshi_ws": True, "kalshi_rest": True})
+    assert len(out["kalshi_rest"]) == 4 and not rest  # everyone caught up: apply everything

@@ -45,6 +45,11 @@ _TS = re.compile(rb'"recv_ts_ms":(\d{13})')
 _MARKER = b'"src":"recorder"'
 _USAGE_LAST = re.compile(rb'"x-requests-last":"?(\d+)')
 _LOG_HEARTBEAT = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) INFO recorder_ws: last 60s: (\{.*\})")
+_LOG_CYCLE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) INFO recorder_rest: cycle: (\d+) markets, (\d+) changed books")
+# Written on the laptop by the pull service (tape/pull.py) when the recorders run on EC2.
+EC2_NOW = "ec2-now.json"
+LAST_PULL = "last-pull.json"
+EC2_FRESH_MS = 3 * MIN_MS
 SCAN_VERSION = 3
 
 
@@ -486,6 +491,88 @@ def health(db_path: Path) -> list[dict]:
 
 # ---------- cheap, per request ----------
 
+def last_cycle(log_path: Path) -> dict | None:
+    """The backup recorder's latest polling cycle: markets polled and books that changed."""
+    try:
+        with log_path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 16_384))
+            lines = fh.read().decode(errors="replace").splitlines()
+    except FileNotFoundError:
+        return None
+    for line in reversed(lines):
+        m = _LOG_CYCLE.match(line)
+        if m:
+            t = int(dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() * 1000) + int(m.group(2))
+            return {"ts_ms": t, "markets": int(m.group(3)), "changed": int(m.group(4))}
+    return None
+
+
+def recorder_report(data: Path) -> dict:
+    """What the recorders' machine knows about them right now. On EC2, the pull service fetches this
+    every minute (`python -m board.tracker report`), since the laptop can't see those processes."""
+    from tape.ctl import RECORDERS
+
+    usage = shutil.disk_usage(data)
+    return {
+        "ts_ms": now_ms(),
+        "services": [s for s in services_status(data) if s["name"] in RECORDERS],
+        "recorder": last_minute(data / "logs" / "kalshi-live.log"),
+        "backup": last_cycle(data / "logs" / "kalshi-backup.log"),
+        "odds": latest_odds_usage(data),
+        "disk": {"free": usage.free, "total": usage.total},
+    }
+
+
+def _read_json(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def ec2_report(data: Path, now: int) -> tuple[dict | None, bool]:
+    """The EC2 recorders' latest report and whether it is recent enough to trust."""
+    report = _read_json(data / "run" / EC2_NOW)
+    return report, bool(report) and now - report.get("ts_ms", 0) <= EC2_FRESH_MS
+
+
+def now_services(data: Path, now: int) -> dict:
+    """The Now section's service rows. With the recorders on EC2 their rows, the live recorder's last
+    minute, odds credits and disk come from the server's latest report; a report over 3 minutes old
+    leaves their state unknown rather than guessed."""
+    from tape.ctl import RECORDERS, REMOTE_RECORDER
+
+    local = services_status(data)
+    usage = shutil.disk_usage(data)
+    disk = {"free": usage.free, "total": usage.total, "where": "this Mac"}
+    if not REMOTE_RECORDER.exists():
+        return {"services": [s for s in local if s["name"] != "pull"], "recorder": last_minute(data / "logs" / "kalshi-live.log"),
+                "backup": None, "odds": latest_odds_usage(data), "disk": disk, "remote": None}
+    report, fresh = ec2_report(data, now)
+    by_name = {s["name"]: s for s in (report or {}).get("services", [])}
+    rows = []
+    for name in RECORDERS:
+        row = {"name": name, "stream": RECORDERS[name]["stream"], "running": False, "started_ms": None, "last_data_ms": None, "url": None,
+               **by_name.get(name, {}), "where": "EC2"}
+        if not fresh:
+            row["running"] = None
+        rows.append(row)
+    pull = _read_json(data / "run" / LAST_PULL)
+    for s in local:
+        if s["name"] not in RECORDERS:
+            rows.append({**s, "last_pull": pull} if s["name"] == "pull" else s)
+    report = report or {}
+    return {
+        "services": rows,
+        "recorder": report.get("recorder"),
+        "backup": report.get("backup"),
+        "odds": report.get("odds"),
+        "disk": {**report["disk"], "where": "EC2"} if report.get("disk") else disk,
+        "remote": {"reported_ms": report.get("ts_ms"), "fresh": fresh},
+    }
+
+
 def services_status(data: Path) -> list[dict]:
     from tape.ctl import SERVICES, _alive  # local import: ctl is a CLI module
 
@@ -664,7 +751,7 @@ class Tracker:
         with self.lock:
             result = dict(self.result)
         now = now_ms()
-        usage = shutil.disk_usage(self.data)
+        rec = now_services(self.data, now)
         return {
             **result,
             "now_ms": now,
@@ -672,12 +759,19 @@ class Tracker:
             "error": self.error,
             "next_refresh_ms": (result.get("computed_ms") or now) + PAPER_EVERY_S * 1000,
             "now": {
-                "services": services_status(self.data),
+                **rec,
                 "health": health(self.db_path),
-                "recorder": last_minute(self.log_path),
-                "odds": latest_odds_usage(self.data),
-                "disk": {"free": usage.free, "total": usage.total},
                 "edges": live_edges(self.db_path, now),
                 "upcoming": upcoming(self.db_path, now),
             },
         }
+
+
+if __name__ == "__main__":
+    import sys
+
+    from tape.config import data_dir
+
+    if sys.argv[1:] != ["report"]:
+        raise SystemExit("usage: python -m board.tracker report   # the recorders' state as JSON (run on EC2)")
+    print(json.dumps(recorder_report(data_dir()), separators=(",", ":")))

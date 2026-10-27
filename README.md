@@ -51,7 +51,7 @@ Services run detached from the terminal, so closing or updating VS Code no longe
 
 ## Running on EC2
 
-The laptop sleeps, so the recorders live on a small always-on server: a t4g.micro running Ubuntu 24.04 in us-east-1, with a 20 GB encrypted disk and a fixed IP (about $11 a month). systemd runs each recorder as `fairline@<name>`, restarts it if it exits and starts it on boot. The board and tracker stay on the laptop: the `pull` service copies the server's closed tape hours and recorder logs into `data/` every 10 minutes, so the board runs up to about an hour behind the server. SSH is open only to the IPs you allow.
+The laptop sleeps, so the recorders live on a small always-on server: a t4g.micro running Ubuntu 24.04 in us-east-1, with a 20 GB encrypted disk and a fixed IP (about $11 a month). systemd runs each recorder as `fairline@<name>`, restarts it if it exits and starts it on boot. The board and tracker stay on the laptop. The `pull` service fetches the recorders' state from the server every minute (shown in the Tracker's **Now** section and the board's status chips) and copies the server's closed tape hours and recorder logs into `data/` every 10 minutes, straight away after the laptop wakes. The board therefore runs up to about an hour behind the server, and after a long sleep it reads the backlog with all streams kept in step, so a restart part-way through skips nothing. SSH is open only to the IPs you allow.
 
 ```bash
 aws login                   # once per AWS session; only up and allow-ip need it
