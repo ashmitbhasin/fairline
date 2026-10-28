@@ -537,6 +537,18 @@ def ec2_report(data: Path, now: int) -> tuple[dict | None, bool]:
     return report, bool(report) and now - report.get("ts_ms", 0) <= EC2_FRESH_MS
 
 
+def known_until(data: Path, now: int) -> int:
+    """How far this machine can judge whether the recorder could see. Locally, up to now. With the
+    recorders on EC2, up to the last successful copy of the server's logs: after it, missing
+    heartbeats mean "not copied yet", not "blind", so those minutes count neither way."""
+    from tape.ctl import REMOTE_RECORDER
+
+    if not REMOTE_RECORDER.exists():
+        return now
+    ok_ms = (_read_json(data / "run" / LAST_PULL) or {}).get("ok_ms")
+    return min(now, ok_ms) if ok_ms else now
+
+
 def now_services(data: Path, now: int) -> dict:
     """The Now section's service rows. With the recorders on EC2 their rows, the live recorder's last
     minute, odds credits and disk come from the server's latest report; a report over 3 minutes old
@@ -684,24 +696,27 @@ class Tracker:
             self.wake.clear()
 
     def request_refresh(self) -> bool:
-        if self.refreshing:
-            return False
+        """Rescan the tape and recompute now. A request during a recompute runs right after it (a pull
+        can land mid-recompute, and its new hours must not wait for the hourly scan). True if this
+        started a recompute, False if it was queued behind one."""
+        busy = self.refreshing
         self.force_tape = True
         self.wake.set()
-        return True
+        return not busy
 
     def refresh(self) -> dict:
         self.refreshing = True
         started = time.monotonic()
         try:
             now = now_ms()
+            known = known_until(self.data, now)
             result = dict(self.result)
             if self.force_tape or not self.blind_until or time.monotonic() - self.tape_at >= TAPE_EVERY_S:
                 self.force_tape = False
-                result["tape"] = self._tape(now)
+                result["tape"] = self._tape(now, known)
                 self.tape_at = time.monotonic()
             beats = log_heartbeats(self.log_path, self.blind_until - SILENCE_MS)
-            blind = _intervals_union(self.blind + recent_blind_spots(beats, self.blind_until, now))
+            blind = _intervals_union(self.blind + recent_blind_spots(beats, self.blind_until, known))
             t = time.monotonic()
             result["paper"] = self.paper.run(blind, now, now)
             result["paper_took_s"] = round(time.monotonic() - t, 1)
@@ -721,21 +736,23 @@ class Tracker:
             self.refreshing = False
         return self.result
 
-    def _tape(self, now: int) -> dict:
+    def _tape(self, now: int, known: int | None = None) -> dict:
+        known = now if known is None else known
         by_stream = self.index.refresh()
         heartbeats = log_heartbeats(self.log_path)
         ws = by_stream["kalshi_ws"]
         beats = sorted(set(heartbeats) | {e[0] for f in ws for e in f["events"] if e[1] == "_heartbeat"})
-        self.blind = blind_spots(ws, beats, now)
-        self.blind_until = now
+        self.blind = blind_spots(ws, beats, known)
+        self.blind_until = known
         measured_from = beats[0] - HEARTBEAT_MS if beats else None
         games = games_list(self.db_path)
         week = now - 7 * DAY_MS
         return {
             "scanned_ms": now,
             "per_day": per_day(by_stream, 14, now),
-            "uptime": uptime(self.blind, measured_from, games, now),
-            "uptime_days": uptime_by_day(self.blind, measured_from, now),
+            "uptime": uptime(self.blind, measured_from, games, known),
+            "uptime_days": uptime_by_day(self.blind, measured_from, known),
+            "known_until_ms": known,
             "timeline": {"from_ms": week, "to_ms": now, "measured_from": measured_from,
                          "down": [[a, b] for a, b in _clip(self.blind, week, now)],
                          "games": [[a, b, label] for a, b, label in game_windows(games) if b > week and a < now]},
