@@ -261,8 +261,10 @@
     K.head.setAttribute('x1', x); K.head.setAttribute('x2', x);
     if (med.x != null) {
       K.dot.setAttribute('cx', med.x); K.dot.setAttribute('cy', med.y);
-      K.medlbl.setAttribute('x', med.x + 8); K.medlbl.setAttribute('y', med.y + 14);
-      K.p90lbl.setAttribute('x', p90.x + 8); K.p90lbl.setAttribute('y', p90.y - 8);
+      var flip = med.x > K.geom.W - K.geom.R - 130; // near the right edge the labels sit left of the line
+      var dx = flip ? -10 : 8, anchor = flip ? 'end' : 'start';
+      K.medlbl.setAttribute('x', med.x + dx); K.medlbl.setAttribute('y', med.y + 16); K.medlbl.setAttribute('text-anchor', anchor);
+      K.p90lbl.setAttribute('x', p90.x + dx); K.p90lbl.setAttribute('y', p90.y - 9); K.p90lbl.setAttribute('text-anchor', anchor);
     } else {
       K.dot.setAttribute('cx', -20);
       K.medlbl.setAttribute('x', -200); K.p90lbl.setAttribute('x', -200);
