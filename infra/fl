@@ -24,7 +24,7 @@ cd "$(dirname "$0")/.."
 NAME=fairline-recorder
 REGION=${AWS_REGION:-us-east-1}
 TYPE=${FAIRLINE_INSTANCE_TYPE:-t4g.micro}
-DISK_GB=20
+DISK_GB=60  # grown from 20 on 2026-10-29: about 3 GB of tape a week
 KEY="$HOME/.ssh/fairline.pem"
 SSHCFG=infra/ssh_config
 RECORDERS="kalshi-live kalshi-backup odds"
