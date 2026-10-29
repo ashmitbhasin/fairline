@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fairline · a research desk for Kalshi NFL markets</title>
+<meta name="description" content="Fairline prices Kalshi NFL contracts off Pinnacle's line, records both markets around the clock, and tests whether the gap pays after fees before risking money.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%230a0d12'/><path d='M2 12h3.5V7.5h4.5V4H14' fill='none' stroke='%234ea1ff' stroke-width='1.9' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="scrollcraft.css">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="sc-grain" aria-hidden="true"></div>
+
+<header class="chrome">
+  <a class="chrome__app" href="#desk" aria-label="Fairline, back to the top">
+    <svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12h3.5V7.5h4.5V4H14"/></svg>
+    <span class="chrome__word">FAIRLINE</span>
+  </a>
+  <nav class="chrome__tabs" aria-label="Sections">
+    <a href="#desk">Desk</a>
+    <a href="#tape">Tape</a>
+    <a href="#fair">Fair value</a>
+    <a href="#kickoff">Kickoff</a>
+    <a href="#record">Record</a>
+    <a href="#gates">Gates</a>
+    <a href="#note">Email me</a>
+  </nav>
+  <p class="chrome__status">Figures as of <span data-f="as_of">the last export</span></p>
+</header>
+
+<main id="main">
+
+  <!-- 1 · Desk: the surface already running -->
+  <section id="desk" class="desk" aria-labelledby="desk-h">
+    <div class="wrap desk__grid">
+      <div class="desk__intro" data-sc-in data-sc-stagger="60">
+        <h1 id="desk-h" class="desk__title">Fairline</h1>
+        <p class="desk__lede">A research desk that prices Kalshi NFL contracts off Pinnacle and tests whether the gap pays, before risking a dollar.</p>
+        <p class="desk__by">Built by <span data-f="owner_name">Ashmit Bhasin</span>. Phase 0, autumn 2026. Research only: it places no orders.</p>
+      </div>
+      <table class="ledger" data-sc-in>
+        <caption>Session</caption>
+        <tbody>
+          <tr><th scope="row">Market</th><td>Kalshi NFL contracts: game winner, point spread, total</td></tr>
+          <tr><th scope="row">Reference</th><td>Pinnacle's line, margin removed by the power method</td></tr>
+          <tr><th scope="row">Recorder</th><td>Every order-book change, sequence-checked, on a server that never sleeps</td></tr>
+          <tr><th scope="row">Recorded</th><td><span class="num" data-f="messages">n/a</span> book messages, <span class="num" data-f="games">n/a</span> games, <span class="num" data-f="markets">n/a</span> markets</td></tr>
+          <tr><th scope="row">Measured</th><td><span class="num" data-f="side_minutes">n/a</span> pregame minutes against a live Pinnacle price</td></tr>
+          <tr><th scope="row">Tested</th><td>7 gates, fixed on Oct 6 before any data; <span data-f="gates_read">1</span> read so far</td></tr>
+          <tr class="ledger__answer"><th scope="row">Answer so far</th><td>No edge after fees.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 2 · Tape: the days pan past, mostly blind until the move -->
+  <section id="tape" class="tape" data-sc-act="pan" data-sc-span="2.4" aria-labelledby="tape-h">
+    <div data-sc-stage class="tape__stage">
+      <div class="tape__rail" data-sc-pan="0.04">
+        <div class="tape__lead">
+          <h2 id="tape-h" class="panel-title">The tape</h2>
+          <p>Every Kalshi order-book change for the week's NFL markets, written to an hourly file. A test can only trust the tape if the recorder could see, so gate G1 asks for 99% uptime first.</p>
+          <p class="tape__key"><span class="key key--laptop" aria-hidden="true"></span>On a laptop <span class="key key--server" aria-hidden="true"></span>On the server</p>
+        </div>
+        <ol class="tape__days" aria-label="Recorder uptime by day, Eastern time"></ol>
+        <div class="tape__end">
+          <p class="tape__end-h">Since the move</p>
+          <p data-f="since_cutover">The recorder moved to an always-on server on Oct 26.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 · Fair value: the math, operable -->
+  <section id="fair" class="fair" aria-labelledby="fair-h">
+    <div class="wrap fair__grid">
+      <div class="fair__copy" data-sc-in data-sc-stagger="60">
+        <h2 id="fair-h" class="panel-title">Fair value</h2>
+        <p>Pinnacle takes the sharpest bets there are and keeps its line, so its price is the reference. Fairline removes Pinnacle's margin, compares the result with Kalshi's price, and charges Kalshi's fee before calling anything an edge.</p>
+        <p>The calculator runs the same formulas as the repo. Change the line.</p>
+      </div>
+      <form class="calc" id="calc" aria-describedby="calc-note" autocomplete="off">
+        <fieldset class="calc__line">
+          <legend>Pinnacle two-way line, American odds</legend>
+          <label>Home <input id="calc-a" name="a" inputmode="text" value="-150" spellcheck="false"></label>
+          <label>Away <input id="calc-b" name="b" inputmode="text" value="+130" spellcheck="false"></label>
+          <label>Contracts <input id="calc-n" name="n" type="number" min="1" max="100000" step="1" value="100"></label>
+        </fieldset>
+        <p id="calc-note" class="calc__note">An example line, not a live quote.</p>
+        <table class="calc__out" aria-live="polite">
+          <tbody>
+            <tr><th scope="row">Implied, margin included</th><td class="num" data-c="implied"></td></tr>
+            <tr><th scope="row">Pinnacle's margin</th><td class="num" data-c="margin"></td></tr>
+            <tr><th scope="row">Fair, home (power)</th><td class="num" data-c="fair"></td></tr>
+            <tr><th scope="row">Method spread (power minus multiplicative)</th><td class="num" data-c="spread"></td></tr>
+            <tr><th scope="row">Kalshi taker fee at that price</th><td class="num" data-c="taker"></td></tr>
+            <tr><th scope="row">Kalshi maker fee at that price</th><td class="num" data-c="maker"></td></tr>
+            <tr class="calc__verdict"><th scope="row">A taker breaks even buying at</th><td class="num" data-c="breakeven"></td></tr>
+          </tbody>
+        </table>
+        <p class="calc__err" role="alert" hidden></p>
+      </form>
+      <figure class="fee">
+        <svg class="fee__svg" viewBox="0 0 520 220" role="img" aria-labelledby="fee-cap"></svg>
+        <figcaption id="fee-cap">Kalshi's fee per contract across the price range: taker 7% and maker 1.75% of p(1&nbsp;&minus;&nbsp;p), largest at 50¢. The dot is the price above.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 4 · Kickoff: the peak. Scroll is the clock. -->
+  <section id="kickoff" class="kick" data-sc-act="pin" data-sc-span="3.6" aria-labelledby="kick-h">
+    <div data-sc-stage class="kick__stage">
+      <div class="wrap kick__grid">
+        <div class="kick__side">
+          <h2 id="kick-h" class="panel-title">Kickoff</h2>
+          <p class="kick__clock num" aria-hidden="true"><span class="kick__t">T&minus;</span><span data-k="clock">3:00:00</span></p>
+          <p class="kick__status" data-k="status">Three hours to kickoff. Scroll to run the clock.</p>
+          <table class="kick__read">
+            <tbody>
+              <tr><th scope="row">Median gap, |fair &minus; mid|</th><td class="num" data-k="median">n/a</td></tr>
+              <tr><th scope="row">90th percentile</th><td class="num" data-k="p90">n/a</td></tr>
+              <tr><th scope="row">Minutes past the 2¢ bar</th><td class="num" data-k="beyond">n/a</td></tr>
+              <tr><th scope="row">Minutes measured in this window</th><td class="num" data-k="n">n/a</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <figure class="kick__chart">
+          <svg class="kick__svg" viewBox="0 0 720 360" role="img" aria-labelledby="kick-cap"></svg>
+          <figcaption id="kick-cap" data-k="caption">The gap between devigged Pinnacle and Kalshi's mid, by minutes to kickoff, against Kalshi's taker fee at 50¢.</figcaption>
+        </figure>
+      </div>
+      <p class="wrap kick__note">Every matched market, every pregame minute the recorder could see with a Pinnacle price under 35 minutes old, crossed books skipped: the same minutes gate G2 counts.</p>
+    </div>
+  </section>
+
+  <!-- 5 · Record: naive replay wipes to the guarded ladder -->
+  <section id="record" class="record" data-sc-act="flow" aria-labelledby="record-h">
+    <div class="wrap record__grid">
+      <div class="record__copy" data-sc-in data-sc-stagger="60">
+        <h2 id="record-h" class="panel-title">Record</h2>
+        <p>Two rules, replayed minute by minute over the tape and scored when Kalshi settled each market. <em>Take</em> buys when fair beats the price by a threshold after the taker fee. <em>Quote</em> rests a bid and an offer either side of fair, and fills only when a trade prints through it.</p>
+        <p>The first replay showed the 2¢ take rule winning. Both of its bets were artifacts: one priced off a recorded book that was wrong, the other off a Pinnacle price that had sat unchanged for ten minutes while other books moved on news. With guards for both, the record reads like this.</p>
+      </div>
+      <div class="record__panels">
+        <div class="record__naive" aria-labelledby="naive-h">
+          <p id="naive-h" class="record__tag">First replay, no guards</p>
+          <p class="record__big num" data-r="naive_pnl">+$57.00</p>
+          <p class="record__sub" data-r="naive_line">Take at 2¢: 1 won, 0 lost</p>
+        </div>
+        <div class="record__guarded" data-sc-reveal="right" data-sc-reveal-at="0.34 0.6">
+          <p class="record__tag">With the guards, every rule</p>
+          <div class="xscroll">
+            <table class="ladder">
+              <thead><tr><th scope="col" class="l">Rule</th><th scope="col">Bets</th><th scope="col">Won–lost</th><th scope="col">P&amp;L</th><th scope="col">Closing-line value</th></tr></thead>
+              <tbody data-r="ladder"></tbody>
+            </table>
+          </div>
+          <p class="record__foot" data-r="foot"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 · Gates: fixed before the data -->
+  <section id="gates" class="gates" aria-labelledby="gates-h">
+    <div class="wrap">
+      <div class="gates__head" data-sc-in data-sc-stagger="60">
+        <h2 id="gates-h" class="panel-title">Gates</h2>
+        <p>Seven tests, each written down on Oct 6 with its pass bar and the earliest date it may be read, before any of the data existed. A gate changes only by adding a new one with a written reason.</p>
+      </div>
+      <div class="xscroll">
+        <table class="gate-table" data-sc-in>
+          <thead><tr><th scope="col" class="l">Gate</th><th scope="col" class="l">Question</th><th scope="col" class="l">Passes when</th><th scope="col" class="l">Read</th></tr></thead>
+          <tbody data-g="rows"></tbody>
+        </table>
+      </div>
+      <p class="gates__quote">“Stopping is a result, not a failure.” <span>From the kill criteria, same day.</span></p>
+    </div>
+  </section>
+
+  <!-- 7 · Email me: the close is an input -->
+  <section id="note" class="note" data-sc-act="pin" data-sc-span="1.25" aria-labelledby="note-h">
+    <div data-sc-stage class="note__stage">
+      <form class="note__form wrap" method="post" enctype="text/plain" data-sc-cue="0 1 0 0">
+        <h2 id="note-h" class="panel-title">Email me</h2>
+        <label for="note-body" class="note__label">Your note</label>
+        <textarea id="note-body" name="note" rows="5"></textarea>
+        <div class="note__row">
+          <button type="submit" class="note__send">Email me</button>
+          <span class="note__help">Opens your mail app with this note. Nothing is sent from this page.</span>
+        </div>
+        <p class="note__alt">Or write to <a data-f="email_link" href="#note"></a></p>
+      </form>
+      <footer class="colophon wrap">
+        <p>Fairline, Phase 0. Figures are aggregates computed by the repo's own code, as of <span data-f="as_of">the last export</span>. The recorded market data stays private (Kalshi Developer Agreement §3.1).</p>
+      </footer>
+    </div>
+  </section>
+
+</main>
+<noscript><p class="noscript">This page computes its panels in the browser; with JavaScript off it shows only the outline.</p></noscript>
+
+<script src="data.js"></script>
+<script src="scrollcraft.js"></script>
+<script src="site.js"></script>
+</body>
+</html>
