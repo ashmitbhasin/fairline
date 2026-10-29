@@ -2,6 +2,10 @@
 
 Layout: <data>/raw/<stream>/<YYYY-MM-DD>/<HH>.jsonl  ->  <HH>.jsonl.gz after rotation.
 Plain JSONL while open means a crash loses at most the last unflushed second.
+
+The .gz is written under a temporary name and renamed into place, and only then is the .jsonl
+deleted, so a .jsonl.gz on disk is always complete (tape/manifest.py and every reader rely on it).
+An hour a stopped recorder never compressed is compressed when the next writer for its stream starts.
 """
 from __future__ import annotations
 
@@ -20,8 +24,10 @@ def now_ms() -> int:
 
 def _compress(path: Path) -> None:
     gz = path.with_suffix(path.suffix + ".gz")
-    with path.open("rb") as src, gzip.open(gz, "wb", compresslevel=6) as dst:
+    tmp = gz.with_name(gz.name + ".tmp")
+    with path.open("rb") as src, gzip.open(tmp, "wb", compresslevel=6) as dst:
         shutil.copyfileobj(src, dst)
+    tmp.replace(gz)
     path.unlink()
 
 
@@ -34,6 +40,19 @@ class JsonlWriter:
         self._fh = None
         self._last_flush = 0.0
         self.records = 0
+        if compress:
+            threading.Thread(target=self._compress_leftovers, daemon=True).start()
+
+    def _compress_leftovers(self) -> None:
+        """Hours a previous run of this recorder never compressed (it was stopped mid-hour and started
+        again after the hour ended). The current hour is left alone: this run appends to it."""
+        current = self.path_for(now_ms())
+        for path in sorted(self.base.glob("*/*.jsonl")):
+            if path != current and not path.with_name(path.name + ".gz").exists():
+                try:
+                    _compress(path)
+                except OSError:
+                    pass
 
     def path_for(self, ts_ms: int) -> Path:
         t = dt.datetime.fromtimestamp(ts_ms / 1000, tz=dt.timezone.utc)

@@ -28,7 +28,6 @@ from .teams import full_name, split_game_code
 ET = ZoneInfo("America/New_York")
 KIND_ORDER = {"winner": 0, "spread": 1, "total": 2}
 GAME_LENGTH_MS = {"nfl": 3 * 3600_000, "nba": 2 * 3600_000 + 30 * 60_000}
-WS_QUIET_MS = 20_000  # REST snapshots only update a book when the WebSocket has been silent this long
 MINUS = "−"
 _STRIKE = re.compile(r"over\s+([0-9]+(?:\.[0-9]+)?)", re.I)
 _LEADING_LETTERS = re.compile(r"^[A-Z]+")
@@ -108,6 +107,7 @@ class MarketState:
     fair_ms: int | None = None
     updated_ms: int | None = None
     source: str | None = None
+    rest_book: bool = False  # the book came from a REST snapshot; WebSocket deltas wait for a fresh snapshot
 
 
 @dataclass
@@ -316,11 +316,14 @@ class BoardState:
             if ticker:
                 st = self._ensure_market(ticker)
                 st.book.apply_snapshot(msg)
+                st.rest_book = False
                 self._after_book(ticker, st, m.get("sending_ts_ms") or recv, "ws")
         elif kind == "orderbook_delta":
             ticker = msg.get("market_ticker")
             if ticker:
                 st = self._ensure_market(ticker)
+                if st.rest_book:
+                    return  # a delta is relative to the WebSocket's book, not to a REST snapshot laid over it
                 st.book.apply_delta(msg)
                 self._after_book(ticker, st, msg.get("ts_ms") or recv, "ws")
         elif kind == "trade":
@@ -359,10 +362,15 @@ class BoardState:
         h.tick(recv)
         h.last_error = None
         ticker = rec.get("ticker")
-        if not ticker or recv - self.ws_last_ms <= WS_QUIET_MS:
-            return  # the WebSocket is live and authoritative
+        # The WebSocket is authoritative whenever it is connected, even when quiet: a quiet connection
+        # can be a stalled one with messages queued behind it, and laying a REST book under those queued
+        # deltas leaves phantom levels (the crossed books found on 2026-10-29). REST fills in only while
+        # the WebSocket is disconnected, and that book then waits for the WebSocket's next snapshot.
+        if not ticker or self.health["kalshi_ws"].connected is True:
+            return
         st = self._ensure_market(ticker)
         st.book.apply_snapshot(rec.get("book") or {})
+        st.rest_book = True
         self._after_book(ticker, st, recv, "rest")
 
     # ---- odds and fair value ---------------------------------------------------------
@@ -432,10 +440,10 @@ class BoardState:
         st = self._ensure_market(ticker)
         if st.fair == fair and (fair is None or st.fair_ms == fair_ms):
             return
-        st.fair, st.fair_ms = fair, fair_ms
+        st.fair, st.fair_ms = fair, fair_ms  # fair_ms: when Pinnacle last moved the line (shown as its age)
         self.dirty.add(ticker)
         if self._history():
-            self.fair_rows.append((ticker, fair_ms, fair))
+            self.fair_rows.append((ticker, self._recv, fair))  # history by receive time: no look-ahead
 
     # ---- views -----------------------------------------------------------------------
 

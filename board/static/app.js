@@ -189,11 +189,19 @@
     return "";
   }
 
+  // Flashes are queued and restarted together: one forced layout per frame, not one per changed cell.
+  // (A layout of the full table costs ~10 ms, and an hourly batch from EC2 can move 600 rows at once.)
+  const flashQ = [];
+  function runFlashes() {
+    for (const [el] of flashQ) el.classList.remove("fu", "fd");
+    void document.body.offsetWidth; // restart the animations
+    for (const [el, cls] of flashQ) el.classList.add(cls);
+    flashQ.length = 0;
+  }
   function flash(el, a, b) {
     if (a == null || b == null || a === b) return;
-    el.classList.remove("fu", "fd");
-    void el.offsetWidth; // restart the animation
-    el.classList.add(a > b ? "fu" : "fd");
+    if (!flashQ.length) requestAnimationFrame(runFlashes);
+    flashQ.push([el, a > b ? "fu" : "fd"]);
   }
 
   function fillRow(r, m, prev) {
@@ -230,7 +238,8 @@
       if (S.filter.fairOnly && m.fair == null) continue;
       if (words.length) {
         const g = S.games.get(m.game_key);
-        const hay = `${m.label} ${m.ticker} ${g ? g.label : ""} ${m.title || ""}`.toLowerCase();
+        // Labels use a true minus ("DAL −1.5"); match a typed hyphen too.
+        const hay = `${m.label} ${m.label.replace(/\u2212/g, "-")} ${m.ticker} ${g ? g.label : ""} ${m.title || ""}`.toLowerCase();
         if (!words.every((w) => hay.includes(w))) continue;
       }
       out.push(m);
@@ -496,7 +505,7 @@
       let state = "ok";
       if (h.running === 0) state = "down";
       else if (dataAge > (S.remote ? Math.max(staleMs, REMOTE_STALE_MS) : staleMs) || (key === "kalshi_ws" && h.connected === 0)) state = "warn";
-      const extra = key === "odds" && h.credits ? ` · ${h.credits} cr` : "";
+      const extra = key === "odds" && h.credits ? ` · ${esc(h.credits)} cr` : "";
       const tip = [`${label}: ${h.running === 0 ? "recorder not running" : h.running === 1 ? "recorder running" : "recorder status unknown"}`,
         `last data ${age(h.last_ms)} ago`, h.per_min ? `${h.per_min}/min` : "", h.gaps_today ? `${h.gaps_today} gaps today` : "",
         h.last_error ? `last error: ${h.last_error}` : ""].filter(Boolean).join("\n");
@@ -505,10 +514,11 @@
 
     const ws = S.health.find((x) => x.stream === "kalshi_ws");
     setHTML($("counters"), `<span><b>${S.markets.size}</b> markets</span><span><b>${S.games.size}</b> games</span>` +
-      `<span><b>${ws ? qty(ws.per_min || 0) : "—"}</b> msgs/min</span><span><b>${ws ? ws.gaps_today || 0 : "—"}</b> gaps today</span>`);
+      // With the recorders on EC2 the tape arrives an hour at a time, so a per-minute rate here means nothing.
+      `<span><b>${ws && !S.remote ? qty(ws.per_min || 0) : "—"}</b> msgs/min</span><span><b>${ws ? ws.gaps_today || 0 : "—"}</b> gaps today</span>`);
 
     const banner = $("banner");
-    const down = S.health.filter((h) => h.running === 0).map((h) => STREAMS.find((s) => s[0] === h.stream)?.[1] || h.stream);
+    const down = S.health.filter((h) => h.running === 0).map((h) => esc(STREAMS.find((s) => s[0] === h.stream)?.[1] || h.stream));
     let msg = "", bad = false;
     if (!S.online && S.lastSync) { msg = `Lost contact with the board server ${age(S.lastSync + S.skew)} ago. Retrying… If it stopped: <code>.venv/bin/python -m tape.ctl start board-web</code>`; bad = true; }
     else if (S.online && S.health.length && indexerAge > INDEXER_STALE_MS) { msg = `The indexer stopped updating ${age(t - indexerAge)} ago, so prices are frozen. Start it: <code>.venv/bin/python -m tape.ctl start board</code>`; bad = true; }
@@ -522,7 +532,7 @@
     setText($("clock"), fClock.format(now()) + " ET");
     for (const m of S.visible) {
       const r = rowEls.get(m.ticker);
-      if (r) setText(r.upd, age(m.updated_ms));
+      if (r) setText(r.upd, age((S.markets.get(m.ticker) || m).updated_ms)); // S.visible can hold an older copy
     }
     for (const tr of grpEls.values()) if (tr.isConnected) fillGroup(tr);
     for (const g of S.games.values()) fillCard(g);
@@ -649,9 +659,11 @@
     renderLadder();
   }
 
+  const markets_hidden = () => document.body.classList.contains("view-tracker");
+
   async function loadHistory() {
     const ticker = S.selected;
-    if (!ticker) return;
+    if (!ticker || markets_hidden()) return;
     try {
       const h = await getJSON(`/api/history?ticker=${encodeURIComponent(ticker)}&range=${S.range}`);
       if (ticker !== S.selected) return;
@@ -664,7 +676,7 @@
 
   async function loadDepth() {
     const ticker = S.selected;
-    if (!ticker) return;
+    if (!ticker || markets_hidden()) return;
     try {
       const d = await getJSON(`/api/depth?ticker=${encodeURIComponent(ticker)}`);
       if (ticker !== S.selected) return;
@@ -855,7 +867,7 @@
       const typing = e.target.matches("input, textarea, select");
       if (e.key === "/" && !typing) { e.preventDefault(); $("search").focus(); $("search").select(); return; }
       if (e.key === "Escape") {
-        if (typing && e.target.value) { e.target.value = ""; S.filter.q = ""; renderRows(); return; }
+        if (e.target === $("search") && e.target.value) { e.target.value = ""; S.filter.q = ""; renderRows(); return; }
         if (typing) { e.target.blur(); return; }
         if (S.selected) closeDrawer();
         return;

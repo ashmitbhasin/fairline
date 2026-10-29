@@ -13,9 +13,16 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/ubuntu/fairline/.venv/bin/python -m tape.ctl run %i
 StandardOutput=append:/home/ubuntu/fairline/data/logs/%i.log
 StandardError=inherit
+# SIGINT, not SIGTERM: the recorders handle it as KeyboardInterrupt and close their tape files, so the
+# last second of buffered records is written and the hour can be compressed.
+KillSignal=SIGINT
+TimeoutStopSec=15
 Restart=always
 RestartSec=5
-TimeoutStopSec=15
+# Back off when a recorder keeps failing (a full disk, a revoked key): 5 s, then longer, up to 15 min,
+# instead of retrying every 5 s forever and spending three Odds API credits on every attempt.
+RestartSteps=6
+RestartMaxDelaySec=15min
 
 [Install]
 WantedBy=multi-user.target

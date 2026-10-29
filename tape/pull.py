@@ -91,6 +91,8 @@ def main() -> None:
             report(run)
         except subprocess.TimeoutExpired as exc:
             log.warning("timed out: %s", exc.cmd)
+        except Exception:  # keep pulling: one bad round must not end the service
+            log.exception("pull round failed")
         time.sleep(args.report_every)
 
 

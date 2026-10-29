@@ -81,13 +81,19 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _runs_module(pid: int, module: str) -> bool:
+    """Is this PID still the service? After a reboot a stale pid file's number can belong to anything."""
+    out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return f"-m {module}" in out or f"tape.ctl run" in out
+
+
 def read_pid(name: str) -> int | None:
     pidfile = run_dir() / f"{name}.pid"
     try:
         pid = int(pidfile.read_text().strip())
     except (FileNotFoundError, ValueError):
         return None
-    return pid if _alive(pid) else None
+    return pid if _alive(pid) and _runs_module(pid, SERVICES[name]["module"]) else None
 
 
 def stray_pids(module: str, known: int | None) -> list[int]:
@@ -99,6 +105,7 @@ def stray_pids(module: str, known: int | None) -> list[int]:
 
 def start(names: list[str]) -> int:
     problems = 0
+    procs: dict[str, subprocess.Popen] = {}
     for name in names:
         spec = SERVICES[name]
         pid = read_pid(name)
@@ -122,6 +129,7 @@ def start(names: list[str]) -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,  # survives the terminal / VS Code that launched it
         )
+        procs[name] = proc
         (run_dir() / f"{name}.pid").write_text(str(proc.pid))
         print(f"{name:14s} started (pid {proc.pid}), log: {log_path(name)}")
         if name == "kalshi-live" and AWAKE:
@@ -129,8 +137,8 @@ def start(names: list[str]) -> int:
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             (run_dir() / "caffeinate.pid").write_text(str(awake.pid))
     time.sleep(3)
-    for name in names:  # catch immediate crashes (missing key, bad config)
-        if not read_pid(name) and (run_dir() / f"{name}.pid").exists():
+    for name, proc in procs.items():  # catch immediate crashes (missing key, bad config)
+        if proc.poll() is not None:  # an exited child is a zombie until reaped, so ask Popen, not kill(0)
             print(f"{name:14s} EXITED right after start. Last log lines:")
             print("   " + "\n   ".join(_tail(log_path(name), 5)))
             problems += 1
@@ -143,7 +151,9 @@ def stop(names: list[str]) -> int:
         if not pid:
             print(f"{name:14s} not running")
             continue
-        os.kill(pid, signal.SIGTERM)
+        # Recorders get SIGINT: they handle it as KeyboardInterrupt and close their tape files, flushing the
+        # last buffered records (SIGTERM would end them without unwinding).
+        os.kill(pid, signal.SIGINT if name in RECORDERS else signal.SIGTERM)
         for _ in range(50):
             if not _alive(pid):
                 break
@@ -191,8 +201,8 @@ def status(names: list[str]) -> int:
         pid = read_pid(name)
         strays = stray_pids(spec["module"], pid)
         if pid:
-            started = dt.datetime.fromtimestamp((run_dir() / f"{name}.pid").stat().st_mtime)
-            state = f"RUNNING  pid {pid}, up {_ago((dt.datetime.now() - started).total_seconds()).replace(' ago', '')}"
+            started = (run_dir() / f"{name}.pid").stat().st_mtime
+            state = f"RUNNING  pid {pid}, up {_ago(time.time() - started).replace(' ago', '')}"
         elif strays:
             state = f"RUNNING  outside controller (pid {', '.join(map(str, strays))})"
         else:
@@ -235,7 +245,7 @@ def logs(names: list[str]) -> int:
     if not path.exists():
         print(f"no log yet at {path}")
         return 1
-    os.execvp("tail", ["tail", "-n", "40", "-f", str(path)])
+    os.execvp("tail", ["tail", "-n", "40", "-F", str(path)])  # -F: pull replaces recorder logs
 
 
 def main() -> None:

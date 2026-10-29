@@ -20,14 +20,16 @@
   const fMD = new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "short", day: "numeric" });
   const fWD = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "short" });
   const fHM = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" });
-  const fOff = new Intl.DateTimeFormat("en-US", { timeZone: TZ, timeZoneName: "shortOffset" });
   const etDay = (ms) => fYMD.format(ms);
   const dayUTC = (s) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  // Eastern midnight is 04:00 UTC in daylight time and 05:00 UTC in standard time; on the two days the
+  // clocks change, noon's offset is the wrong one for midnight, so test which instant starts the day.
   const etMidnight = (s) => {
-    const noon = dayUTC(s) + 12 * 3_600_000;
-    const off = (fOff.formatToParts(noon).find((p) => p.type === "timeZoneName") || {}).value || "GMT-5";
-    const h = Number((off.match(/GMT([+-]\d+)/) || [0, -5])[1]);
-    return dayUTC(s) - h * 3_600_000;
+    for (const h of [4, 5]) {
+      const t = dayUTC(s) + h * 3_600_000;
+      if (etDay(t) === s && etDay(t - 1) !== s) return t;
+    }
+    return dayUTC(s) + 5 * 3_600_000;
   };
   const dayName = (s) => { const ms = etMidnight(s) + 12 * 3_600_000; return `${fWD.format(ms)} ${fMD.format(ms)}`; };
   const kickoff = (ms) => `${fWD.format(ms)} ${fMD.format(ms)}, ${fHM.format(ms)}`;
@@ -169,10 +171,13 @@
     const live = (n.services || []).find((s) => s.name === "kalshi-live");
     const ws = (n.health || []).find((h) => h.stream === "kalshi_ws");
     const lastSeen = Math.max(n.recorder?.ts_ms || 0, ws?.last_ms || 0);
+    // A report from EC2 arrives once a minute and its heartbeat is up to a minute old within it.
+    const silentAfter = n.remote ? 5 * 60_000 : SILENT_MS;
     let state;
     if (live && live.running === null) state = `<span class="off">No report from the EC2 recorder ${n.remote?.reported_ms ? `since ${esc(when(n.remote.reported_ms))}` : "yet"}</span>`;
     else if (!live || !live.running) state = `<span class="off">Recorder stopped</span>`;
-    else if (now - lastSeen > SILENT_MS) state = `<span class="off">Recorder silent since ${esc(when(lastSeen))}</span>`;
+    else if (!lastSeen) state = `<span class="off">No recorder heartbeat yet</span>`;
+    else if (now - lastSeen > silentAfter) state = `<span class="off">Recorder silent since ${esc(when(lastSeen))}</span>`;
     else state = `<span><span class="on">Recording</span> · ${int(n.recorder?.msgs)} Kalshi messages in the last minute</span>`;
     const next = (n.upcoming || []).find((g) => g.kickoff_ms > now);
     const nextHTML = next ? `<span>Next: <b>${esc(next.label)}</b> ${esc(fWD.format(next.kickoff_ms))} ${esc(fHM.format(next.kickoff_ms))}, in ${dur(next.kickoff_ms - now)}</span>` : "";
@@ -671,7 +676,7 @@
     $("tab-tracker").setAttribute("aria-selected", String(tracker));
     document.title = tracker ? "Fairline Tracker" : "Fairline Board";
     history.replaceState(null, "", tracker ? `#tracker${K.variant ? "/" + K.variant : ""}` : location.pathname);
-    if (tracker) { render(); load(); } else clearTimeout(K.timer);
+    if (tracker) { render(); load(); } else { clearTimeout(K.timer); window.dispatchEvent(new Event("resize")); } // redraw the drawer chart
   }
 
   function boot() {

@@ -273,3 +273,28 @@ def test_fair_series_uses_receive_time(tmp_path):
     series = fair_series(PinnacleTape(tmp_path).polls(), state)
     assert series["KXNFLGAME-26OCT08TBDAL-DAL"][0][0] == T0 + 1234
     assert series["KXNFLGAME-26OCT08TBDAL-TB"][0][1] == pytest.approx(1 - series["KXNFLGAME-26OCT08TBDAL-DAL"][0][1], abs=1e-4)
+
+
+def test_clv_summary_numbers_g4_reads():
+    """G4 decides on the mean CLV and its 95% interval; pin both, and the share that beat the close."""
+    from board.paper import tally
+    bets = [{"status": "won", "cost": 50.0, "pnl": 10.0, "ev": 1.0, "edge": 0.01, "clv": c} for c in (0.01, 0.03, -0.01, 0.05)]
+    out = tally(bets)
+    assert out["clv_n"] == 4 and out["clv_mean"] == pytest.approx(0.02)
+    sd = (sum((c - 0.02) ** 2 for c in (0.01, 0.03, -0.01, 0.05)) / 3) ** 0.5  # sample SD, n - 1
+    assert out["clv_ci"] == pytest.approx(1.96 * sd / 2)
+    assert out["beat_close"] == 0.75
+
+
+def test_gap_by_time_to_kickoff_buckets_the_same_minutes():
+    """by_lead splits the G2 minutes into 5-minute buckets counted back from kickoff."""
+    from board.paper import g2_summary
+    gap = {"minutes": 3, "qualifying": 1, "abs_sum": 0.06, "days": {"2026-10-07": [3, 1]},
+           "abs_hist": {10: 2, 40: 1}, "beyond_hist": {20: 3},
+           "lead": {0: [2, 1, 0.05, {10: 1, 40: 1}], 35: [1, 0, 0.01, {10: 1}]}}
+    out = g2_summary([{"gap": gap, "kind": "spread"}], now=1791400000000)
+    rows = out["by_lead"]["rows"]
+    assert [r["lead_min"] for r in rows] == [175, 0]  # oldest first
+    assert rows[1]["minutes"] == 2 and rows[1]["qualifying"] == 1
+    assert rows[1]["median"] == pytest.approx(0.0105) and rows[0]["mean"] == pytest.approx(0.01)
+    assert sum(r["minutes"] for r in rows) == out["side_minutes"]

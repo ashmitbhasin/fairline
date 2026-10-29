@@ -81,6 +81,7 @@ def variant_id(rule: str, param: float) -> str:
 VARIANTS = [(variant_id("take", e), "take", e) for e in TAKE_EDGES] + [(variant_id("quote", q), "quote", q) for q in QUOTE_MARGINS]
 ABS_BIN, ABS_BINS = 0.001, 200        # |fair - mid| histogram: 0.1 cent bins to 20 cents
 BEYOND_LO, BEYOND_BIN, BEYOND_BINS = -0.05, 0.0025, 60   # gap beyond half spread: -5 to +10 cents
+LEAD_BIN_MS, LEAD_BINS = 5 * MIN_MS, 36  # the gap by time to kickoff: 5-minute buckets over the last 3 hours
 EPS = 1e-9
 
 
@@ -110,7 +111,7 @@ class PinnacleTape:
                 try:
                     hit = (sig, self._read(path))
                 except (OSError, EOFError, gzip.BadGzipFile) as exc:  # being compressed right now
-                    log.debug("skip %s: %r", rel, exc)
+                    log.warning("skipped unreadable odds file %s: %r", rel, exc)
                     continue
                 self.cache[rel] = hit
             out.extend(hit[1])
@@ -232,7 +233,7 @@ def replay(m: dict, tob: list, trades: list, fairs: list, down: list, now: int, 
     quote_open = [(v, q) for v, rule, q in VARIANTS if rule == "quote"]
     kickoff = m["kickoff_ms"]
     out = {"ticker": m["ticker"], "game_key": m["game_key"], "kind": m["kind"], "kickoff_ms": kickoff, "bets": [],
-           "gap": {"minutes": 0, "qualifying": 0, "abs_sum": 0.0, "days": {}, "abs_hist": {}, "beyond_hist": {}},
+           "gap": {"minutes": 0, "qualifying": 0, "abs_sum": 0.0, "days": {}, "abs_hist": {}, "beyond_hist": {}, "lead": {}},
            "close_fair": None, "close_mid": None}
     before = [f for f in fairs if f[0] <= kickoff]
     if before:
@@ -288,6 +289,13 @@ def replay(m: dict, tob: list, trades: list, fairs: list, down: list, now: int, 
             gap["abs_hist"][ab] = gap["abs_hist"].get(ab, 0) + 1
             bb = max(0, min(BEYOND_BINS, int(math.floor((beyond - BEYOND_LO) / BEYOND_BIN + EPS))))
             gap["beyond_hist"][bb] = gap["beyond_hist"].get(bb, 0) + 1
+            lead = (kickoff - t0 - 1) // LEAD_BIN_MS  # 0: the minutes starting in the last 5 before kickoff
+            if lead < LEAD_BINS:
+                lb = gap["lead"].setdefault(lead, [0, 0, 0.0, {}])  # minutes, qualifying, |gap| sum, |gap| histogram
+                lb[0] += 1
+                lb[1] += q
+                lb[2] += g
+                lb[3][ab] = lb[3].get(ab, 0) + 1
         if not m.get("trade") or not (PRICE_MIN <= fair <= PRICE_MAX) or t0 - fair_ts > TRADE_FRESH_MS:
             continue
         if take_open:
@@ -581,6 +589,7 @@ def g2_summary(replays: list[dict], now: int, recent_days: int = 7) -> dict:
     abs_hist = [0] * (ABS_BINS + 1)
     beyond_hist = [0] * (BEYOND_BINS + 1)
     by_kind: dict[str, list[int]] = {}
+    lead: dict[int, list] = {}
     markets = 0
     for r in replays:
         g = r["gap"]
@@ -601,12 +610,19 @@ def g2_summary(replays: list[dict], now: int, recent_days: int = 7) -> dict:
             abs_hist[int(i)] += n
         for i, n in g["beyond_hist"].items():
             beyond_hist[int(i)] += n
+        for i, (n, q, a, hist) in g.get("lead", {}).items():
+            row = lead.setdefault(int(i), [0, 0, 0.0, [0] * (ABS_BINS + 1)])
+            row[0] += n
+            row[1] += q
+            row[2] += a
+            for b, c in hist.items():
+                row[3][int(b)] += c
     if not total:
         return {"available": False, "reason": "no pregame minutes with a fresh Pinnacle price yet"}
 
-    def quantile(q: float) -> float:
-        target, run = q * total, 0
-        for i, n in enumerate(abs_hist):
+    def quantile(q: float, hist: list[int] = abs_hist, n_total: int = total) -> float:
+        target, run = q * n_total, 0
+        for i, n in enumerate(hist):
             run += n
             if run >= target:
                 return (i + 0.5) * ABS_BIN
@@ -621,4 +637,11 @@ def g2_summary(replays: list[dict], now: int, recent_days: int = 7) -> dict:
         "by_kind": {k: {"minutes": v[0], "qualifying": v[1]} for k, v in by_kind.items()},
         "days": [{"day": d, "minutes": n, "qualifying": q} for d, (n, q) in sorted(days.items())],
         "beyond_hist": {"lo": BEYOND_LO, "bin": BEYOND_BIN, "counts": beyond_hist},
+        # By time to kickoff, oldest bucket first: lead_min is the start of a bucket counted back from
+        # kickoff (0 = the last five minutes). Same minutes as everything above.
+        "by_lead": {"bin_min": LEAD_BIN_MS // MIN_MS, "rows": [
+            {"lead_min": i * LEAD_BIN_MS // MIN_MS, "minutes": lead[i][0], "qualifying": lead[i][1],
+             "mean": lead[i][2] / lead[i][0], "median": quantile(0.5, lead[i][3], lead[i][0]),
+             "p90": quantile(0.9, lead[i][3], lead[i][0])}
+            for i in sorted(lead, reverse=True) if lead[i][0]]},
     }

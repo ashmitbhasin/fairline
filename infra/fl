@@ -2,13 +2,15 @@
 # The EC2 recorder, driven from the laptop. Run from anywhere in the repo: infra/fl <command>
 #
 #   up         create (or find) the instance, its SSH key, firewall and fixed IP; needs `aws login`
-#   allow-ip   let this network's IP reach SSH (after changing Wi-Fi)
+#   allow-ip   let this network's IP reach SSH (after changing Wi-Fi); lists the other IPs still allowed
+#   forget-ip IP  stop allowing an IP you no longer use
 #   install    copy the code, .env and secrets/, then set up Python and systemd on the server
 #   cutover    stop the laptop's recorders, hand the open hour to the server, start the recorders there
-#   deploy     copy code changes and restart the server's recorders
+#   deploy     copy code changes and restart the server's recorders, one at a time
+#   sync-code  copy code changes without restarting (recorder changes apply at the next restart)
 #   status     tape.ctl status on the server
 #   logs NAME  follow one recorder's log on the server
-#   pull       copy the server's closed tape hours and recorder logs into this laptop's data/
+#   pull       copy the server's finished tape hours (tape/manifest.py) and recorder logs into data/
 #   report     the recorders' state on the server, as JSON
 #              (the `pull` service in tape.ctl runs report every minute and pull every 10 minutes)
 #   ssh        a shell on the server
@@ -41,10 +43,12 @@ need_host() {
   [ -f "$SSHCFG" ] || { echo "No server yet. Run: infra/fl up"; exit 1; }
 }
 
+# Prints the group id, or an error line starting "error:" (bash 3.2 does not apply set -e inside $(...),
+# so callers check the result with sg_or_die).
 security_group() {
   local vpc sg
   vpc=$(aws_ ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
-  [ "$vpc" != None ] || { echo "This region has no default VPC; set AWS_REGION to one that does."; exit 1; }
+  [ "$vpc" != None ] || { echo "error: this region has no default VPC; set AWS_REGION to one that does."; return 1; }
   sg=$(aws_ ec2 describe-security-groups --filters Name=group-name,Values=fairline-ssh Name=vpc-id,Values="$vpc" \
     --query 'SecurityGroups[0].GroupId' --output text)
   if [ "$sg" = None ]; then
@@ -54,18 +58,38 @@ security_group() {
   echo "$sg"
 }
 
+sg_or_die() {
+  local sg
+  sg=$(security_group) || { echo "${sg#error: }"; exit 1; }
+  case "$sg" in sg-*) echo "$sg" ;; *) echo "unexpected security group: $sg"; exit 1 ;; esac
+}
+
+ssh_cidrs() {
+  aws_ ec2 describe-security-groups --group-ids "$1" \
+    --query "SecurityGroups[0].IpPermissions[?FromPort==\`22\`].IpRanges[].CidrIp" --output text | tr '\t' '\n' | grep . || true
+}
+
 allow_ip() {
   need_aws
-  local sg ip
-  sg=$(security_group)
+  local sg ip others
+  sg=$(sg_or_die) || exit 1
   ip=$(curl -fsS https://checkip.amazonaws.com)
-  if aws_ ec2 describe-security-groups --group-ids "$sg" \
-      --query "SecurityGroups[0].IpPermissions[?FromPort==\`22\`].IpRanges[].CidrIp" --output text | tr '\t' '\n' | grep -qx "$ip/32"; then
+  if ssh_cidrs "$sg" | grep -qx "$ip/32"; then
     echo "SSH already open to $ip"
   else
     aws_ ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "$ip/32" >/dev/null
     echo "SSH opened to $ip"
   fi
+  others=$(ssh_cidrs "$sg" | grep -vx "$ip/32" || true)
+  [ -z "$others" ] || echo "also allowed (infra/fl forget-ip IP to remove one): $(echo $others)"
+}
+
+forget_ip() {
+  need_aws
+  local sg
+  sg=$(sg_or_die) || exit 1
+  aws_ ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "${1%/32}/32" >/dev/null
+  echo "SSH closed to ${1%/32}"
 }
 
 instance_id() {
@@ -84,8 +108,8 @@ up() {
   fi
   [ -f "$KEY" ] || { echo "AWS has key pair 'fairline' but $KEY is missing."; exit 1; }
 
-  local sg id ami root eip ip
-  sg=$(security_group)
+  local sg id ami root eip ip state
+  sg=$(sg_or_die) || exit 1
   allow_ip
   id=$(instance_id)
   if [ -z "$id" ]; then
@@ -100,6 +124,11 @@ up() {
       --query 'Instances[0].InstanceId' --output text)
     echo "launched $id ($TYPE, $DISK_GB GB, $REGION)"
   fi
+  state=$(aws_ ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].State.Name' --output text)
+  case "$state" in
+    stopping) aws_ ec2 wait instance-stopped --instance-ids "$id"; aws_ ec2 start-instances --instance-ids "$id" >/dev/null ;;
+    stopped) aws_ ec2 start-instances --instance-ids "$id" >/dev/null; echo "started $id" ;;
+  esac
   aws_ ec2 wait instance-running --instance-ids "$id"
 
   eip=$(aws_ ec2 describe-addresses --filters "Name=tag:Name,Values=$NAME" --query 'Addresses[0].AllocationId' --output text)
@@ -122,18 +151,23 @@ Host fairline
 EOF
   printf 'waiting for SSH on %s' "$ip"
   for _ in $(seq 60); do
-    ssh_ -o ConnectTimeout=5 true 2>/dev/null && { echo " ready: $id at $ip"; return; }
+    ssh_ true 2>/dev/null && { echo " ready: $id at $ip"; return; }
     printf .; sleep 5
   done
   echo; echo "SSH didn't answer. Try: infra/fl allow-ip"; exit 1
 }
 
+# The server gets the code (files deleted but not yet committed are skipped) and only the secrets the
+# recorders use: the Kalshi production key and the Odds API key, never the rest of .env or secrets/.
 push_code() {
+  local pem
   ssh_ 'mkdir -p ~/fairline/secrets && chmod 700 ~/fairline/secrets'
-  git ls-files -co --exclude-standard | rsync_ --files-from=- ./ fairline:fairline/
-  rsync_ .env fairline:fairline/.env
-  rsync_ secrets/ fairline:fairline/secrets/
-  ssh_ 'chmod 600 ~/fairline/.env ~/fairline/secrets/*'
+  git ls-files -co --exclude-standard | while IFS= read -r f; do [ -e "$f" ] && printf '%s\n' "$f"; done \
+    | rsync_ --files-from=- ./ fairline:fairline/
+  grep -E '^(KALSHI_PROD_|ODDS_API_KEY=|FAIRLINE_)' .env | ssh_ 'umask 077; cat > ~/fairline/.env'
+  pem=$(grep -E '^KALSHI_PROD_PRIVATE_KEY_PATH=' .env | cut -d= -f2- | tr -d "\"'")
+  rsync_ "$pem" fairline:fairline/secrets/
+  ssh_ 'chmod 700 ~/fairline/secrets && chmod 600 ~/fairline/.env ~/fairline/secrets/*'
 }
 
 install() {
@@ -164,33 +198,58 @@ cutover() {
   status
 }
 
+# Restarts the recorders one at a time, so the live and backup Kalshi recorders are never both down.
 deploy() {
   need_host
   push_code
-  ssh_ "cd ~/fairline && .venv/bin/pip install -q -e '.[dev]' && sudo install -m 644 infra/fairline@.service /etc/systemd/system/ \
-    && sudo systemctl daemon-reload && sudo systemctl try-restart $(units $RECORDERS)"
+  ssh_ "cd ~/fairline && .venv/bin/pip install -q -e . && sudo install -m 644 infra/fairline@.service /etc/systemd/system/ \
+    && sudo systemctl daemon-reload"
+  for r in $RECORDERS; do
+    ssh_ "sudo systemctl try-restart fairline@$r"
+    sleep 5
+  done
   status
 }
 
-status() { need_host; ssh_ "cd ~/fairline && .venv/bin/python -m tape.ctl status $RECORDERS" || true; }
+# Copies code and the unit file without restarting anything: new recorder code takes effect at the next
+# restart. Used when a change matters only to the laptop or to tools run on the server.
+sync_code() {
+  need_host
+  push_code
+  ssh_ "cd ~/fairline && .venv/bin/pip install -q -e . && sudo install -m 644 infra/fairline@.service /etc/systemd/system/ \
+    && sudo systemctl daemon-reload"
+}
 
+status() { need_host; ssh_ "cd ~/fairline && .venv/bin/python -m tape.ctl status $RECORDERS"; }
+
+# The server says which tape files are finished and how far every Kalshi stream is complete
+# (tape/manifest.py); only those files come down, and the frontier is recorded after they have, for the
+# board's indexer (board/indexer.py). A file still being written or compressed never leaves the server.
 pull() {
   need_host
-  # Closed hours only: the hour the server is still writing comes down once it has closed.
-  rsync_ --exclude "*/$(date -u +%Y-%m-%d)/$(date -u +%H).jsonl" fairline:fairline/data/raw data/
+  local manifest
+  manifest=$(ssh_ 'cd ~/fairline && .venv/bin/python -m tape.manifest')
+  printf '%s' "$manifest" | .venv/bin/python -c 'import json, sys; print("\n".join(json.load(sys.stdin)["files"]))' \
+    > data/run/pull-files.txt
+  rsync_ --files-from=data/run/pull-files.txt fairline:fairline/ ./
   rsync_ --include 'kalshi-*.log' --include 'odds.log' --exclude '*' fairline:fairline/data/logs/ data/logs/
+  printf '%s' "$manifest" | .venv/bin/python -c 'import json, sys; d = json.load(sys.stdin); print(json.dumps({"frontier_ms": d["frontier_ms"], "server_now_ms": d["now_ms"]}))' \
+    > data/run/tape-frontier.json.tmp
+  mv data/run/tape-frontier.json.tmp data/run/tape-frontier.json
 }
 
 case "${1:-}" in
   up) up ;;
   allow-ip) allow_ip ;;
+  forget-ip) forget_ip "${2:?which IP?}" ;;
   install) install ;;
   cutover) cutover ;;
   deploy) deploy ;;
+  sync-code) sync_code ;;
   status) status ;;
   logs) need_host; ssh_ -t "cd ~/fairline && .venv/bin/python -m tape.ctl logs ${2:?which service?}" ;;
   pull) pull ;;
   report) need_host; ssh_ 'cd ~/fairline && .venv/bin/python -m board.tracker report' ;;
   ssh) need_host; ssh -F "$SSHCFG" fairline ;;
-  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

@@ -151,6 +151,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -167,7 +169,7 @@ venv.bak/
 .ropeproject
 
 # mkdocs/Zensical documentation
-/site
+# /site is the project site (site/), not an mkdocs build
 
 # mypy
 .mypy_cache/
@@ -227,3 +229,6 @@ infra/ssh_config
 *.key
 # Raw market data stays private (Kalshi Developer Agreement §3.1 bars redistribution).
 data/
+
+# macOS Finder metadata
+.DS_Store

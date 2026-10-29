@@ -54,7 +54,7 @@
     },
     {
       "label": "Stop everything",
-      "detail": "Stops the recorders and the board. Data already recorded is kept.",
+      "detail": "Stops this laptop's services (board and pull; the recorders too if they run here). The EC2 recorders keep running.",
       "type": "process",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "tape.ctl", "stop"],
@@ -76,7 +76,7 @@
       "detail": "Stream one server recorder's log (Ctrl+C to stop following)",
       "type": "process",
       "command": "${workspaceFolder}/infra/fl",
-      "args": ["logs", "${input:service}"],
+      "args": ["logs", "${input:recorder}"],
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated", "showReuseMessage": false, "clear": true }
     },
@@ -105,6 +105,13 @@
       "type": "pickString",
       "description": "Which service's log?",
       "options": ["kalshi-live", "kalshi-backup", "odds", "board", "board-web", "pull"],
+      "default": "kalshi-live"
+    },
+    {
+      "id": "recorder",
+      "type": "pickString",
+      "description": "Which server recorder's log?",
+      "options": ["kalshi-live", "kalshi-backup", "odds"],
       "default": "kalshi-live"
     }
   ]
