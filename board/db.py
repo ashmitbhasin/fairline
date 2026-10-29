@@ -127,7 +127,9 @@ class Writer:
                 c.executemany("INSERT INTO tape(ts_ms, ticker, kind, old, new, qty, side) VALUES (?,?,?,?,?,?,?)", drained["tape"])
             set_meta(c, "rev", rev)
             if state.latest_ms:
-                set_meta(c, "last_ts_ms", state.latest_ms)
+                # Never move back: a resume replays the last 45 minutes, and a checkpoint written from
+                # inside that window would make the next restart insert the same history again.
+                set_meta(c, "last_ts_ms", max(state.latest_ms, state.history_after_ms))
         self.flushes += 1
         if self.flushes % 40 == 0:
             with c:
@@ -152,14 +154,21 @@ def load_catalog(conn: sqlite3.Connection, state) -> None:
 
 
 def load_today(conn: sqlite3.Connection, state, day: str, day_start_ms: int) -> None:
-    """After a resume, take today's trade counts, volume and opening mid from the database."""
+    """After a resume, take today's trade counts, volume and opening mid from the database, and each
+    market's last trade where the replayed window held none (otherwise the next write would blank it)."""
     trades = {r[0]: (r[1], r[2]) for r in conn.execute(
         "SELECT ticker, COUNT(*), COALESCE(SUM(qty), 0) FROM trades WHERE ts_ms >= ? GROUP BY ticker", (day_start_ms,))}
     opens = {r[0]: r[1] for r in conn.execute(
         """SELECT t.ticker, (t.bid + t.ask) / 2 FROM top_of_book t
            JOIN (SELECT ticker, MIN(ts_ms) AS first FROM top_of_book WHERE ts_ms >= ? AND bid IS NOT NULL AND ask IS NOT NULL GROUP BY ticker) f
              ON t.ticker = f.ticker AND t.ts_ms = f.first""", (day_start_ms,))}
+    last = {r["ticker"]: r for r in conn.execute(
+        "SELECT ticker, last_price, last_qty, last_side, last_trade_ms FROM market_state WHERE last_trade_ms IS NOT NULL")}
     for ticker, st in state.markets.items():
+        prev = last.get(ticker)
+        if prev and (st.last_trade_ms is None or st.last_trade_ms < prev["last_trade_ms"]):
+            st.last_price, st.last_qty, st.last_side, st.last_trade_ms = (
+                prev["last_price"], prev["last_qty"], prev["last_side"], prev["last_trade_ms"])
         st.day = day
         st.trades_today, st.volume_today = trades.get(ticker, (0, 0.0))
         if ticker in opens:

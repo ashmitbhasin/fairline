@@ -10,7 +10,7 @@ sudo timedatectl set-timezone America/New_York
 sudo apt-get update -q
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq python3-venv python3-pip rsync chrony
 
-# 2 GB of RAM; swap covers the tracker's hourly tape scan.
+# 1 GB of RAM (t4g.micro); swap gives the recorders headroom for a busy Sunday.
 if [ ! -f /swapfile ]; then
   sudo fallocate -l 2G /swapfile
   sudo chmod 600 /swapfile
@@ -24,7 +24,7 @@ mkdir -p data/logs data/run secrets
 chmod 700 secrets
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q -e ".[dev]"
+.venv/bin/pip install -q -e .  # no dev extras: nothing installed here that the recorders do not need
 
 sudo install -m 644 infra/fairline@.service /etc/systemd/system/fairline@.service
 sudo systemctl daemon-reload

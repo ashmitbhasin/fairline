@@ -56,9 +56,11 @@ def data_dir() -> Path:
 
 def load_dotenv(path: Path = ROOT / ".env") -> None:
     """Load KEY=VALUE lines from .env. Variables already set in the environment win."""
-    if not path.exists():
+    try:
+        text = path.read_text()
+    except OSError:  # missing, or unreadable (macOS can refuse a background process a file on the Desktop)
         return
-    for line in path.read_text().splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

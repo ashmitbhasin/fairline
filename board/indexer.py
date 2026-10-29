@@ -8,14 +8,22 @@ fair values are rebuilt in the order they happened. On a resume it replays only 
 (the WebSocket recorder reconnects every 30 minutes, so every book gets a fresh snapshot inside that
 window) and does not re-insert history the database already holds. Then it follows the live files
 and flushes changes every 0.25 s.
+
+With the recorders on EC2 (infra/fl has set up a server) there are no live files here: infra/fl pull
+copies finished hours down and records a frontier, the time before which every Kalshi stream is
+complete (tape/manifest.py). The indexer then applies whole hours, all streams merged by receive
+time, and never an hour at or past the frontier, so a stream whose file landed first cannot run
+ahead of one still being copied.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gc
 import heapq
-from collections import deque
+import json
 import logging
+from collections import deque
 import signal
 import time
 
@@ -30,6 +38,7 @@ STREAMS = ("kalshi_ws", "kalshi_rest", "odds")
 RECORDER_NAME = {"kalshi_ws": "kalshi-live", "kalshi_rest": "kalshi-backup", "odds": "odds"}
 RESUME_WINDOW_MS = 45 * 60_000
 ODDS_RESUME_WINDOW_MS = 4 * 3600_000  # odds are polled hourly on the free tier
+FRONTIER_FILE = "tape-frontier.json"   # in data/run/, written by infra/fl pull
 
 
 def apply(state: BoardState, stream: str, rec: dict) -> None:
@@ -68,6 +77,37 @@ def take_aligned(buffers: dict[str, deque], caught_up: dict[str, bool]) -> dict[
             take.append(buf.popleft())
         out[s] = take
     return out
+
+
+class _NoGC:
+    """Applying a dense hour holds millions of records in memory at once, and Python 3.14's collector
+    re-walks them all repeatedly (a whole-tape rebuild stalled in it for minutes per hour). Applying
+    records creates no reference cycles, so collection waits until the batch is done."""
+
+    def __enter__(self):
+        self.was = gc.isenabled()
+        gc.disable()
+
+    def __exit__(self, *exc):
+        if self.was:
+            gc.enable()
+
+
+def remote_tape() -> bool:
+    """True when the recorders run on EC2 and the tape here is copied down by infra/fl pull."""
+    try:
+        from tape import ctl
+    except Exception:
+        return False
+    return ctl.REMOTE_RECORDER.exists()
+
+
+def tape_frontier(root) -> int | None:
+    """EC2 mode: the receive time before which every Kalshi stream's tape is complete here."""
+    try:
+        return int(json.loads((root / "run" / FRONTIER_FILE).read_text())["frontier_ms"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def recorder_running(stream: str) -> bool | None:
@@ -113,26 +153,43 @@ class Indexer:
             db.load_catalog(self.conn, self.state)
         self.running: dict[str, bool | None] = {}
         self.stop = False
+        self.remote = remote_tape()
+        self.applied: set[tuple[str, tuple[str, str]]] = set()  # (stream, hour) already applied
 
     # ---- start-up replay -----------------------------------------------------------
 
+    def limit_key(self):
+        """Replay and apply only hours before this key: the current hour locally (the recorders are
+        still writing it), the copied frontier with the recorders on EC2 (None: nothing copied yet)."""
+        if not self.remote:
+            return key_for_ms(int(time.time() * 1000))
+        frontier = tape_frontier(self.root)
+        return key_for_ms(frontier) if frontier else None
+
     def replay(self) -> dict:
-        now_key = key_for_ms(int(time.time() * 1000))
+        limit = self.limit_key()
         starts = {s: None for s in STREAMS}
         if self.last_ts:
             starts = {s: key_for_ms(self.last_ts - (ODDS_RESUME_WINDOW_MS if s == "odds" else RESUME_WINDOW_MS)) for s in STREAMS}
-        files = {s: {k: p for k, p in stream_files(self.root, s).items() if k < now_key and (starts[s] is None or k >= starts[s])} for s in STREAMS}
+        self.floor = dict(starts)
+        files = {s: {k: p for k, p in stream_files(self.root, s).items()
+                     if limit is not None and k < limit and (starts[s] is None or k >= starts[s])} for s in STREAMS}
         hours = sorted(set().union(*(f.keys() for f in files.values())))
         mode = f"resuming from {dt.datetime.fromtimestamp(self.last_ts / 1000, ET):%a %H:%M}" if self.last_ts else "building from the whole tape"
         log.info("%s: %d closed hour(s) to replay", mode, len(hours))
-        started, count = time.time(), 0
-        bad = 0
+        with _NoGC():
+            self._replay_hours(files, hours, time.time())
+        return {s: next_key(max(files[s])) if files[s] else starts[s] for s in STREAMS}
+
+    def _replay_hours(self, files: dict, hours: list, started: float) -> None:
+        count = bad = 0
         for i, hour in enumerate(hours, 1):
             batches = {}
             for s in STREAMS:
                 if hour in files[s]:
                     batches[s], n_bad = read_records(files[s][hour])
                     bad += n_bad
+                    self.applied.add((s, hour))
             for stream, rec in merged(batches):
                 apply(self.state, stream, rec)
                 count += 1
@@ -141,9 +198,6 @@ class Indexer:
                 log.info("  replayed %s %s:00 UTC (%d/%d hours, %d records, %.0fs)", hour[0], hour[1], i, len(hours), count, time.time() - started)
         if bad:
             log.warning("skipped %d unreadable tape lines during replay", bad)
-        # Follow from the hour after the last one replayed, not from now: when the tape is copied down
-        # from the EC2 recorder, closed hours can land after this replay and must still be read.
-        return {s: next_key(max(files[s])) if files[s] else starts[s] for s in STREAMS}
 
     def finish_resume(self) -> None:
         now = dt.datetime.now(ET)
@@ -159,6 +213,57 @@ class Indexer:
             rows.append((stream, now_ms, h.last_ms, h.per_minute(now_ms), None if self.running.get(stream) is None else int(self.running[stream]),
                          None if h.connected is None else int(h.connected), h.gaps_today, h.disconnects_today, h.credits, h.last_error))
         return rows
+
+    def apply_copied(self) -> int:
+        """EC2 mode: apply every copied hour before the frontier not applied yet, oldest first, each
+        hour's streams merged by receive time. Returns the number of hours applied."""
+        frontier = tape_frontier(self.root)  # read once: a pull may move it while this runs
+        if frontier is None:
+            return 0
+        limit = key_for_ms(frontier)
+        files = {s: {k: p for k, p in stream_files(self.root, s).items()
+                     if k < limit and (s, k) not in self.applied and (self.floor.get(s) is None or k >= self.floor[s])}
+                 for s in STREAMS}
+        hours = sorted(set().union(*(f.keys() for f in files.values())))
+        with _NoGC():
+            self._apply_hours(files, hours)
+        if hours:
+            log.info("applied %d copied hour(s), through %s %s:00 UTC", len(hours), hours[-1][0], hours[-1][1])
+        done = int(db.get_meta(self.conn, "complete_until_ms") or 0)
+        if frontier > done:
+            with self.conn:
+                db.set_meta(self.conn, "complete_until_ms", frontier)  # read by the tracker's paper record
+        return len(hours)
+
+    def _apply_hours(self, files: dict, hours: list) -> None:
+        for hour in hours:
+            batches = {}
+            for s in STREAMS:
+                if hour in files[s]:
+                    batches[s], n_bad = read_records(files[s][hour])
+                    if n_bad:
+                        log.warning("%s %s %s:00: skipped %d unreadable lines", s, hour[0], hour[1], n_bad)
+                    self.applied.add((s, hour))
+            for stream, rec in merged(batches):
+                apply(self.state, stream, rec)
+            self.writer.flush(self.state, self.state.drain())
+
+    def follow_copied(self) -> None:
+        """EC2 mode: wait for infra/fl pull to copy more hours, and apply them."""
+        last_check = last_health = last_procs = 0.0
+        log.info("following copied tape (recorders on EC2): applying hours as the frontier passes them")
+        while not self.stop:
+            now = time.time()
+            if now - last_check >= 5:
+                self.apply_copied()
+                last_check = now
+            if now - last_procs >= 5:
+                self.running = {s: recorder_running(s) for s in STREAMS}
+                last_procs = now
+            if now - last_health >= 1:
+                self.writer.write_health(self.health_rows(int(now * 1000)))
+                last_health = now
+            time.sleep(min(self.interval * 4, 1.0))
 
     def follow(self, starts: dict) -> None:
         tailers = {s: StreamTailer(self.root, s, start=starts[s]) for s in STREAMS}
@@ -198,7 +303,10 @@ class Indexer:
         if self.last_ts:
             self.finish_resume()
         log.info("board ready: %d markets, %d games", len(self.state.markets), len(self.state.games))
-        self.follow(starts)
+        if self.remote:
+            self.follow_copied()
+        else:
+            self.follow(starts)
 
 
 def main() -> None:

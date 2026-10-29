@@ -148,15 +148,33 @@ def test_unchanged_top_of_book_writes_no_history():
     assert out["tob"] == [] and DAL in out["depth_dirty"] and DAL not in out["dirty"]
 
 
-def test_rest_snapshots_only_apply_when_websocket_is_quiet():
+def test_rest_snapshots_only_apply_while_the_websocket_is_disconnected():
     s = BoardState()
     s.apply_ws(snapshot(T0))
     rest = {"recv_ts_ms": T0 + 5000, "src": "kalshi_rest", "type": "orderbook", "ticker": DAL,
             "book": {"yes_dollars": [["0.7000", "5.00"]], "no_dollars": [["0.2500", "5.00"]]}}
     s.apply_rest(rest)
-    assert s.markets[DAL].bid == 0.79  # WebSocket still authoritative
+    assert s.markets[DAL].bid == 0.79  # WebSocket authoritative
     s.apply_rest({**rest, "recv_ts_ms": T0 + 60_000})
+    assert s.markets[DAL].bid == 0.79  # quiet is not disconnected: a stalled socket may have deltas queued
+    s.apply_ws({"recv_ts_ms": T0 + 61_000, "src": "recorder", "type": "_disconnected", "error": "x"})
+    s.apply_rest({**rest, "recv_ts_ms": T0 + 62_000})
     assert (s.markets[DAL].bid, s.markets[DAL].ask, s.markets[DAL].source) == (0.70, 0.75, "rest")
+
+
+def test_websocket_deltas_wait_for_a_snapshot_after_a_rest_book():
+    """The crossed books: queued WebSocket deltas applied on top of a REST snapshot leave phantom levels."""
+    s = BoardState()
+    s.apply_ws(snapshot(T0))
+    s.apply_ws({"recv_ts_ms": T0 + 1000, "src": "recorder", "type": "_disconnected", "error": "x"})
+    s.apply_rest({"recv_ts_ms": T0 + 2000, "src": "kalshi_rest", "type": "orderbook", "ticker": DAL,
+                  "book": {"yes_dollars": [["0.7000", "5.00"]], "no_dollars": [["0.2500", "5.00"]]}})
+    s.apply_ws({"recv_ts_ms": T0 + 3000, "src": "recorder", "type": "_connected"})
+    stale = ws(T0 + 4000, "orderbook_delta", {"market_ticker": DAL, "price_dollars": "0.8200", "delta_fp": "5.00", "side": "yes"}, seq=2)
+    s.apply_ws(stale)
+    assert s.markets[DAL].bid == 0.70  # not 0.82 on a book the delta was never relative to
+    s.apply_ws(snapshot(T0 + 5000, yes=(("0.7800", "10.00"),), no=(("0.2000", "10.00"),)))
+    assert (s.markets[DAL].bid, s.markets[DAL].ask, s.markets[DAL].source) == (0.78, 0.80, "ws")
 
 
 def test_fair_values_match_identical_pinnacle_lines():
@@ -335,3 +353,86 @@ def test_follow_holds_fast_streams_until_a_lagging_one_catches_up():
     assert len(rest) == 4
     out = take_aligned({"kalshi_ws": ws, "kalshi_rest": rest}, {"kalshi_ws": True, "kalshi_rest": True})
     assert len(out["kalshi_rest"]) == 4 and not rest  # everyone caught up: apply everything
+
+
+def test_copied_tape_is_applied_in_time_order_only_up_to_the_frontier(tmp_path, monkeypatch):
+    """With the recorders on EC2, a stream whose hour lands first must not run ahead of one still being
+    copied: the REST book from late in an hour cannot be applied before the WebSocket deltas of that hour."""
+    from board.indexer import FRONTIER_FILE, Indexer
+    from tape import ctl
+
+    monkeypatch.setenv("FAIRLINE_DATA_DIR", str(tmp_path))
+    cfg = tmp_path / "ssh_config"
+    cfg.write_text("Host fairline\n")
+    monkeypatch.setattr(ctl, "REMOTE_RECORDER", cfg)
+    (tmp_path / "run").mkdir()
+    h17 = T0 - T0 % 3_600_000  # 2026-10-07 17:00 UTC
+    frontier = tmp_path / "run" / FRONTIER_FILE
+
+    def write(stream, hh, records):
+        p = _hour(tmp_path, stream, "2026-10-07", hh)
+        p.write_text("".join(json.dumps(r) + "\n" for r in records))
+
+    write("kalshi_ws", "17", [markets_record(h17 + 1000), snapshot(h17 + 2000)])
+    frontier.write_text(json.dumps({"frontier_ms": h17 + 3_600_000}))
+    idx = Indexer()
+    idx.replay()
+    # hour 18 of the backup stream arrives first: its 18:50 book must wait for the live stream's hour 18
+    rest_book = {"recv_ts_ms": h17 + 3_600_000 + 50 * 60_000, "src": "kalshi_rest", "type": "orderbook", "ticker": DAL,
+                 "book": {"yes_dollars": [["0.7000", "10.00"]], "no_dollars": [["0.2500", "10.00"]]}}
+    write("kalshi_rest", "18", [rest_book])
+    assert idx.apply_copied() == 0  # the frontier has not passed hour 18
+    write("kalshi_ws", "18", [ws(h17 + 3_600_000 + 60_000, "orderbook_delta",
+                                 {"market_ticker": DAL, "price_dollars": "0.8000", "delta_fp": "5.00", "side": "yes"}, seq=2)])
+    frontier.write_text(json.dumps({"frontier_ms": h17 + 2 * 3_600_000}))
+    assert idx.apply_copied() == 1
+    conn = db.connect(tmp_path / "board.db", readonly=True)
+    rows = [tuple(r)[1:3] for r in conn.execute("SELECT * FROM top_of_book WHERE ticker = ? ORDER BY rowid", (DAL,))]
+    assert [ts for ts, _ in rows] == sorted(ts for ts, _ in rows)  # written in receive order
+    assert int(db.get_meta(conn, "complete_until_ms")) == h17 + 2 * 3_600_000
+    conn.close()
+    idx.conn.close()
+
+
+def test_without_a_copied_frontier_nothing_is_applied(tmp_path, monkeypatch):
+    from board.indexer import Indexer
+    from tape import ctl
+
+    monkeypatch.setenv("FAIRLINE_DATA_DIR", str(tmp_path))
+    cfg = tmp_path / "ssh_config"
+    cfg.write_text("Host fairline\n")
+    monkeypatch.setattr(ctl, "REMOTE_RECORDER", cfg)
+    _hour(tmp_path, "kalshi_ws", "2026-10-07", "17").write_text(json.dumps(markets_record(T0)) + "\n")
+    idx = Indexer()
+    idx.replay()
+    assert idx.apply_copied() == 0 and not idx.state.markets
+    idx.conn.close()
+
+
+def test_checkpoint_never_moves_back_during_a_resume(tmp_path):
+    """A resume replays the last 45 minutes; a checkpoint written from inside that window would make the
+    next restart insert the same trades again (17,527 rows for an hour of 14,917 trades, before)."""
+    conn = db.connect(tmp_path / "board.db")
+    db.init(conn)
+    w = db.Writer(conn)
+    s = BoardState(history_after_ms=T0 + 3_600_000)
+    s.apply_ws(markets_record(T0))  # replaying the window before the stored checkpoint
+    w.flush(s, s.drain())
+    assert int(db.get_meta(conn, "last_ts_ms")) == T0 + 3_600_000
+    conn.close()
+
+
+def test_resume_keeps_each_markets_last_trade(tmp_path):
+    conn = db.connect(tmp_path / "board.db")
+    db.init(conn)
+    w = db.Writer(conn)
+    s = BoardState()
+    s.apply_ws(markets_record(T0))
+    s.apply_ws(ws(T0 + 1000, "trade", {"market_ticker": DAL, "yes_price_dollars": "0.7900", "count_fp": "10.00", "taker_side": "yes", "ts_ms": T0 + 1000}))
+    w.flush(s, s.drain())
+    resumed = BoardState(history_after_ms=T0 + 1000)
+    db.load_catalog(conn, resumed)
+    resumed.apply_ws(snapshot(T0 + 5000))  # the replayed window holds a book change but no trade
+    db.load_today(conn, resumed, "2026-10-07", T0 - 3_600_000)
+    assert (resumed.markets[DAL].last_price, resumed.markets[DAL].last_trade_ms) == (0.79, T0 + 1000)
+    conn.close()

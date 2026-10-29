@@ -162,6 +162,8 @@ async def run(args: argparse.Namespace) -> None:
                     log.info("recording %d markets", len(tickers))
                     backoff = 1.0
                     await Session(ws, tickers, writer).run(next_discovery)
+                    # The planned refresh: say so, so the seconds until the next _connected count as blind.
+                    writer.write({"recv_ts_ms": now_ms(), "src": "recorder", "type": "_disconnected", "reason": "refresh"})
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

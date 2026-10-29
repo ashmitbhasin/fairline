@@ -43,14 +43,18 @@ def read_records(path: Path) -> tuple[list[dict], int]:
     """Every complete record in one closed hour file, plus the count of unreadable lines."""
     opener = gzip.open if path.name.endswith(".gz") else open
     records, bad = [], 0
-    with opener(path, "rb") as fh:
-        for line in fh:
-            if not line.strip():
-                continue
-            try:
-                records.append(json.loads(line))
-            except ValueError:
-                bad += 1
+    try:
+        with opener(path, "rb") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    bad += 1
+    except (EOFError, OSError) as exc:  # a truncated .gz: keep what was readable, and say so
+        log.warning("%s: unreadable after %d records (%r)", path, len(records), exc)
+        bad += 1
     return records, bad
 
 

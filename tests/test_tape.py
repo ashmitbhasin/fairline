@@ -147,3 +147,39 @@ async def test_sleep_wall_returns_by_the_wall_clock(monkeypatch):
     monkeypatch.setattr(op.asyncio, "sleep", fake_sleep)
     await op.sleep_wall(900)
     assert naps[0] == 15 and sum(naps[1:]) <= 300 + 1e-9  # caught up instead of waiting a full 900 s more
+
+
+def test_manifest_copies_only_finished_hours_and_reports_the_frontier(tmp_path):
+    from tape.manifest import HOUR_MS, hour_start_ms, manifest
+
+    root = tmp_path / "data"
+
+    def touch(stream, day, name):
+        p = root / "raw" / stream / day / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}\n")
+        return p
+
+    touch("kalshi_ws", "2026-11-01", "17.jsonl.gz")                     # finished
+    touch("kalshi_ws", "2026-11-01", "18.jsonl.gz")
+    touch("kalshi_ws", "2026-11-01", "18.jsonl")                        # being compressed: neither copied
+    touch("kalshi_ws", "2026-11-01", "19.jsonl")                        # being written
+    touch("kalshi_rest", "2026-11-01", "19.jsonl")
+    touch("odds", "2026-11-01", "14.jsonl")                             # never compressed, long finished
+    touch("odds", "2026-11-01", "18.jsonl")                             # odds rotate late: still open
+    now = hour_start_ms(root / "raw" / "kalshi_ws" / "2026-11-01" / "19.jsonl") + 20 * 60_000
+    out = manifest(root, now)
+    assert out["files"] == ["data/raw/kalshi_ws/2026-11-01/17.jsonl.gz", "data/raw/odds/2026-11-01/14.jsonl"]
+    # kalshi_ws hour 18 is still being compressed, so nothing at or after 18:00 is complete yet
+    assert out["frontier_ms"] == now - 20 * 60_000 - HOUR_MS
+    # once it is done the frontier moves to the hour both Kalshi streams are writing
+    (root / "raw" / "kalshi_ws" / "2026-11-01" / "18.jsonl").unlink()
+    assert manifest(root, now)["frontier_ms"] == now - 20 * 60_000
+
+
+def test_manifest_frontier_does_not_wait_for_a_stopped_recorder(tmp_path):
+    from tape.manifest import HOUR_MS, manifest
+
+    root = tmp_path / "data"
+    now = 1793500000000
+    assert manifest(root, now) == {"now_ms": now, "frontier_ms": now - now % HOUR_MS, "files": []}

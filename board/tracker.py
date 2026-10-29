@@ -50,7 +50,7 @@ _LOG_CYCLE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) INFO re
 EC2_NOW = "ec2-now.json"
 LAST_PULL = "last-pull.json"
 EC2_FRESH_MS = 3 * MIN_MS
-SCAN_VERSION = 3
+SCAN_VERSION = 4
 
 
 def now_ms() -> int:
@@ -66,6 +66,46 @@ def et_midnight(day: str) -> int:
     return int(dt.datetime(d.year, d.month, d.day, tzinfo=ET).timestamp() * 1000)
 
 
+def et_day_end(day: str) -> int:
+    """The next Eastern midnight: a day is 23 or 25 hours long when the clocks change."""
+    return et_midnight((dt.date.fromisoformat(day) + dt.timedelta(days=1)).isoformat())
+
+
+def local_log_ms(stamp: str, millis: str, after_ms: int | None = None, before_ms: int | None = None) -> int:
+    """A recorder log timestamp ("2026-11-01 01:30:00", "250") as epoch ms. Logs carry local time with
+    no offset, and on the night the clocks go back the hour from 1:00 to 2:00 happens twice. Reading
+    lines in order, the right one of the two is the one not earlier than the line before (after_ms);
+    reading only the newest line, the later one that is not in the future (before_ms)."""
+    naive = dt.datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    first = int(naive.replace(fold=0).timestamp() * 1000) + int(millis)
+    second = int(naive.replace(fold=1).timestamp() * 1000) + int(millis)
+    if first == second:
+        return first
+    if after_ms is not None:
+        return second if first < after_ms - 1000 else first
+    if before_ms is not None:
+        return second if second <= before_ms + MIN_MS else first
+    return first
+
+
+_SEEN = (b'"src":"kalshi_ws"', b'"type":"_heartbeat"')
+
+
+def _seen_before(body: bytes, end: int, fallback: int | None) -> int | None:
+    """Receive time of the last line before `end` showing the live recorder seeing the market (a Kalshi
+    message or a heartbeat), or `fallback` if this chunk has none."""
+    pos = end
+    while pos > 0:
+        start = body.rfind(b"\n", 0, max(pos - 1, 0)) + 1
+        line = body[start:pos]
+        if any(tag in line for tag in _SEEN):
+            m = _TS.search(line)
+            if m:
+                return int(m.group(1))
+        pos = start
+    return fallback
+
+
 # ---------- tape file scanning ----------
 
 def scan_file(path: Path, want_events: bool, want_usage: bool) -> dict:
@@ -73,7 +113,7 @@ def scan_file(path: Path, want_events: bool, want_usage: bool) -> dict:
     odds usage. Never parses whole records."""
     opener = gzip.open if path.suffix == ".gz" else open
     records, minutes, events, usage = 0, set(), [], []
-    first = last = None
+    first = last = seen = None
     tail = b""
     with opener(path, "rb") as fh:
         while True:
@@ -99,11 +139,18 @@ def scan_file(path: Path, want_events: bool, want_usage: bool) -> dict:
                     end = body.find(b"\n", pos)
                     try:
                         rec = json.loads(body[start:end])
-                        if rec.get("type") in ("_connected", "_disconnected", "_gap", "_heartbeat"):
-                            events.append([rec["recv_ts_ms"], rec["type"]])
+                        kind = rec.get("type")
+                        if kind == "_connected":
+                            # Also note when the recorder last saw the market before this connection, so a
+                            # session that ended without a _disconnected (the planned 30-minute refresh, a
+                            # restart) still counts as blind until the new one opened.
+                            events.append([rec["recv_ts_ms"], kind, _seen_before(body, start, seen)])
+                        elif kind in ("_disconnected", "_gap", "_heartbeat"):
+                            events.append([rec["recv_ts_ms"], kind])
                     except (ValueError, KeyError):
                         pass
                     pos = body.find(_MARKER, end)
+                seen = _seen_before(body, len(body), seen)
             if want_usage:
                 for line in body.split(b"\n"):
                     if b'"src":"odds_api"' in line:
@@ -111,7 +158,8 @@ def scan_file(path: Path, want_events: bool, want_usage: bool) -> dict:
                         used = _USAGE_LAST.search(line)
                         if ts and used:
                             usage.append([int(ts.group(1)), int(used.group(1))])
-    return {"records": records, "minutes": sorted(minutes), "first": first, "last": last, "events": events, "usage": usage}
+    return {"records": records, "minutes": sorted(minutes), "first": first, "last": last, "events": events, "usage": usage,
+            "last_seen": seen}
 
 
 class TapeIndex:
@@ -152,7 +200,7 @@ class TapeIndex:
                         try:
                             res = scan_file(f, stream == "kalshi_ws", stream == "odds")
                         except (OSError, EOFError, gzip.BadGzipFile) as exc:  # being rotated right now
-                            log.debug("skip %s: %r", rel, exc)
+                            log.warning("skipped unreadable tape file %s for now: %r", rel, exc)
                             continue
                         entry = {"key": key, "bytes": st.st_size, **res}
                         self.files[rel] = entry
@@ -216,12 +264,13 @@ def log_heartbeats(log_path: Path, since_ms: int = 0) -> list[int]:
     even when no market moves). Times in the log are local time: the Mac's, or the EC2 recorder's, which
     infra/setup.sh sets to Eastern to match."""
     out = []
+    prev = None
     try:
         with log_path.open("r", errors="replace") as fh:
             for line in fh:
                 m = _LOG_HEARTBEAT.match(line)
                 if m:
-                    t = int(dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() * 1000) + int(m.group(2))
+                    t = prev = local_log_ms(m.group(1), m.group(2), after_ms=prev)
                     if t >= since_ms:
                         out.append(t)
     except FileNotFoundError:
@@ -245,7 +294,7 @@ def last_minute(log_path: Path) -> dict | None:
                 counts = ast.literal_eval(m.group(3))
             except (ValueError, SyntaxError):
                 return None
-            t = int(dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() * 1000) + int(m.group(2))
+            t = local_log_ms(m.group(1), m.group(2), before_ms=now_ms())
             return {"ts_ms": t, **{k: v for k, v in counts.items() if isinstance(v, (int, float))}}
     return None
 
@@ -255,17 +304,31 @@ def blind_spots(ws_files: list[dict], heartbeats: list[int], now: int) -> list[t
     to the next `_connected`, and any stretch over three minutes with no sign of life (no heartbeat,
     event or message: process stopped, Mac asleep, network gone). Quiet markets alone never last that
     long across every subscribed market, so silence this long means the recorder was blind."""
-    events: list[list] = sorted(e for f in ws_files for e in f["events"])
+    events: list[list] = []
+    seen = None
+    for f in ws_files:  # in hour order
+        for e in f["events"]:
+            if e[1] == "_connected" and len(e) > 2 and e[2] is None:
+                e = [e[0], e[1], seen]  # the connection opened a new hour file: last seen is in the one before
+            events.append(e)
+        seen = f.get("last_seen") or seen
+    events.sort(key=lambda e: (e[0], e[1]))
     evidence = sorted(set(heartbeats) | {e[0] for e in events} | {m * MIN_MS for f in ws_files for m in f["minutes"]})
     if not evidence:
         return []
     down: list[tuple[int, int]] = []
     pending = None
-    for ts, kind in events:
+    for e in events:
+        ts, kind = e[0], e[1]
+        last_seen = e[2] if len(e) > 2 else None
         if kind == "_disconnected" and pending is None:
             pending = ts
-        elif kind == "_connected" and pending is not None:
-            down.append((pending, ts))
+        elif kind == "_connected":
+            # Blind from the last sign of seeing the market (or the _disconnected, if earlier) until the
+            # new connection: a session that ended without a _disconnected marker still left a gap.
+            start = min(x for x in (pending, last_seen) if x is not None) if (pending or last_seen) else None
+            if start is not None and ts > start:
+                down.append((start, ts))
             pending = None
     if pending is not None:
         down.append((pending, now))
@@ -322,9 +385,10 @@ def uptime(down: list[tuple[int, int]], measured_from: int | None, games: list[d
 
 def uptime_by_day(down: list[tuple[int, int]], measured_from: int | None, now: int, days: int = 14) -> dict[str, float | None]:
     out = {}
+    today = dt.date.fromisoformat(et_day(now))
     for i in range(days - 1, -1, -1):
-        day = et_day(now - i * DAY_MS)
-        a, b = et_midnight(day), min(et_midnight(day) + DAY_MS, now)
+        day = (today - dt.timedelta(days=i)).isoformat()
+        a, b = et_midnight(day), min(et_day_end(day), now)
         if measured_from is not None:
             a = max(a, measured_from)
         if measured_from is None or b - a < HOUR_MS:
@@ -503,7 +567,7 @@ def last_cycle(log_path: Path) -> dict | None:
     for line in reversed(lines):
         m = _LOG_CYCLE.match(line)
         if m:
-            t = int(dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() * 1000) + int(m.group(2))
+            t = local_log_ms(m.group(1), m.group(2), before_ms=now_ms())
             return {"ts_ms": t, "markets": int(m.group(3)), "changed": int(m.group(4))}
     return None
 
@@ -547,6 +611,31 @@ def known_until(data: Path, now: int) -> int:
         return now
     ok_ms = (_read_json(data / "run" / LAST_PULL) or {}).get("ok_ms")
     return min(now, ok_ms) if ok_ms else now
+
+
+def paper_known_until(data: Path, db_path: Path, now: int) -> int:
+    """How far the tape behind the paper record is complete, so a game's replay is frozen as final only
+    once its last pregame minutes are in. Locally the recorders write the tape live: now. With them on
+    EC2, the board's database is complete up to the copied frontier it has applied (meta
+    complete_until_ms, written by the indexer) and the odds tape up to the end of its last copied hour."""
+    from tape.ctl import REMOTE_RECORDER
+
+    if not REMOTE_RECORDER.exists():
+        return now
+    board = 0
+    if db_path.exists():
+        conn = _ro(db_path)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'complete_until_ms'").fetchone()
+            board = int(row[0]) if row else 0
+        except sqlite3.Error:
+            board = 0
+        finally:
+            conn.close()
+    hours = [p for p in (data / "raw" / "odds").glob("*/*.jsonl.gz")]
+    odds = max((int(dt.datetime.strptime(f"{p.parent.name} {p.name[:2]}", "%Y-%m-%d %H")
+                    .replace(tzinfo=dt.timezone.utc).timestamp() * 1000) + HOUR_MS for p in hours), default=0)
+    return min(board, odds, now)
 
 
 def now_services(data: Path, now: int) -> dict:
@@ -718,7 +807,7 @@ class Tracker:
             beats = log_heartbeats(self.log_path, self.blind_until - SILENCE_MS)
             blind = _intervals_union(self.blind + recent_blind_spots(beats, self.blind_until, known))
             t = time.monotonic()
-            result["paper"] = self.paper.run(blind, now, now)
+            result["paper"] = self.paper.run(blind, paper_known_until(self.data, self.db_path, now), now)
             result["paper_took_s"] = round(time.monotonic() - t, 1)
             result["computed_ms"] = now
             result["took_s"] = round(time.monotonic() - started, 1)

@@ -264,3 +264,110 @@ def test_a_rescan_asked_for_mid_recompute_is_queued_not_dropped(tmp_path):
     tr.refreshing = True
     assert tr.request_refresh() is False
     assert tr.force_tape is True and tr.wake.is_set()
+
+
+# --- blind time the markers do not show -------------------------------------------------
+
+def test_a_reconnect_without_a_disconnect_still_counts_as_blind(tmp_path):
+    """The live recorder ends each session every 30 minutes (and on a restart) without writing
+    _disconnected; the seconds until the next _connected are blind and must count."""
+    f = tmp_path / "17.jsonl"
+    _write(f, [
+        {"recv_ts_ms": T0, "src": "kalshi_ws", "m": {"type": "orderbook_delta"}},
+        {"recv_ts_ms": T0 + 20_000, "src": "kalshi_ws", "m": {"type": "trade"}},
+        {"recv_ts_ms": T0 + 25_000, "src": "recorder", "type": "_markets", "markets": []},
+        {"recv_ts_ms": T0 + 31_000, "src": "recorder", "type": "_connected"},
+        {"recv_ts_ms": T0 + 32_000, "src": "kalshi_ws", "m": {"type": "orderbook_snapshot"}},
+    ])
+    res = scan_file(f, want_events=True, want_usage=False)
+    assert res["events"] == [[T0 + 31_000, "_connected", T0 + 20_000]] and res["last_seen"] == T0 + 32_000
+    assert blind_spots([res], [], T0 + 60_000) == [(T0 + 20_000, T0 + 31_000)]
+
+
+def test_a_reconnect_opening_an_hour_uses_the_last_hour_seen(tmp_path):
+    a, b = tmp_path / "17.jsonl", tmp_path / "18.jsonl"
+    _write(a, [{"recv_ts_ms": T0, "src": "kalshi_ws", "m": {"type": "trade"}}])
+    _write(b, [{"recv_ts_ms": T0 + 9_000, "src": "recorder", "type": "_connected"},
+               {"recv_ts_ms": T0 + 10_000, "src": "kalshi_ws", "m": {"type": "trade"}}])
+    files = [scan_file(a, True, False), scan_file(b, True, False)]
+    assert blind_spots(files, [], T0 + 30_000) == [(T0, T0 + 9_000)]
+
+
+# --- the night the clocks go back (Sun Nov 1 2026, 2:00 EDT -> 1:00 EST) ----------------------
+
+@pytest.fixture
+def eastern(monkeypatch):
+    import time as _time
+    monkeypatch.setenv("TZ", "America/New_York")
+    _time.tzset()
+    yield
+    monkeypatch.undo()
+    _time.tzset()
+
+
+def test_log_heartbeats_through_the_repeated_hour(tmp_path, eastern):
+    from board.tracker import local_log_ms
+    start = 1793505600000  # 2026-11-01 04:00 UTC = 00:00 EDT
+    lines = []
+    for i in range(181):  # one a minute, 00:00 EDT to 02:00 EST
+        t = dt.datetime.fromtimestamp((start + i * MIN) / 1000)
+        lines.append(f"{t:%Y-%m-%d %H:%M:%S},000 INFO recorder_ws: last 60s: {{'msgs': 5}}\n")
+    log = tmp_path / "kalshi-live.log"
+    log.write_text("".join(lines))
+    beats = log_heartbeats(log)
+    assert beats == [start + i * MIN for i in range(181)]
+    assert recent_blind_spots(beats, start + 100 * MIN, start + 180 * MIN) == []
+    # the newest line alone: the later 1:30 once it has happened, the earlier one before that
+    assert local_log_ms("2026-11-01 01:30:00", "0", before_ms=start + 160 * MIN) == start + 150 * MIN
+    assert local_log_ms("2026-11-01 01:30:00", "0", before_ms=start + 100 * MIN) == start + 90 * MIN
+
+
+def test_uptime_by_day_covers_the_25_hour_day(eastern):
+    from board.tracker import et_day_end, et_midnight
+    nov1 = et_midnight("2026-11-01")
+    assert et_day_end("2026-11-01") - nov1 == 25 * 3_600_000
+    outage = [(et_day_end("2026-11-01") - 50 * MIN, et_day_end("2026-11-01") - 10 * MIN)]  # 23:10 to 23:50 EST
+    days = uptime_by_day(outage, nov1 - 10 * 86_400_000, et_day_end("2026-11-02") - 1, days=3)
+    assert list(days) == ["2026-10-31", "2026-11-01", "2026-11-02"]
+    assert days["2026-11-01"] == pytest.approx(1 - 40 / (25 * 60))
+
+
+def test_paper_waits_for_the_copied_tape_before_freezing_a_game(tmp_path, monkeypatch):
+    from board import db
+    from board.tracker import paper_known_until
+    from tape import ctl
+    now = T0 + 5 * 3_600_000
+    assert paper_known_until(tmp_path, tmp_path / "board.db", now) == now  # recorders here: live
+    cfg = tmp_path / "ssh_config"
+    cfg.write_text("Host fairline\n")
+    monkeypatch.setattr(ctl, "REMOTE_RECORDER", cfg)
+    conn = db.connect(tmp_path / "board.db")
+    db.init(conn)
+    with conn:
+        db.set_meta(conn, "complete_until_ms", T0 - T0 % 3_600_000)  # board complete to 19:00 UTC
+    conn.close()
+    hour = T0 - T0 % 3_600_000  # 2026-10-07 19:00 UTC
+    _write(tmp_path / "raw" / "odds" / "2026-10-07" / "19.jsonl.gz", [{"recv_ts_ms": T0}], gz=True)  # odds to 20:00
+    assert paper_known_until(tmp_path, tmp_path / "board.db", now) == hour  # the board is the earlier of the two
+
+
+def test_server_refuses_a_rebound_hostname(tmp_path):
+    """A page that points its own name at 127.0.0.1 must not read the board or trigger a recompute."""
+    import http.client
+    Handler.board = Board(tmp_path / "missing.db")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        port = httpd.server_address[1]
+        for method, path, headers in (("GET", "/api/snapshot", {}), ("POST", "/api/tracker/refresh", {"X-Fairline": "1"})):
+            c = http.client.HTTPConnection("127.0.0.1", port)
+            c.request(method, path, headers={"Host": f"rebind.attacker.test:{port}", "Origin": f"http://rebind.attacker.test:{port}", **headers})
+            assert c.getresponse().status == 403
+            c.close()
+        c = http.client.HTTPConnection("127.0.0.1", port)
+        c.request("GET", "/api/snapshot", headers={"Host": f"localhost:{port}"})
+        assert c.getresponse().status == 503  # allowed through; this test has no database
+        c.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

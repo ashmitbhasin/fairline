@@ -141,7 +141,7 @@ class Board:
         cutoff = now_ms() - span
         out = {}
         with self.conn() as c:
-            for t in tickers[:80]:
+            for t in tickers[-80:]:  # the client lists games oldest first: keep the newest
                 rows = c.execute("SELECT ts_ms, (bid + ask) / 2 FROM top_of_book WHERE ticker = ? AND ts_ms >= ? AND bid IS NOT NULL AND ask IS NOT NULL ORDER BY ts_ms", (t, cutoff)).fetchall()
                 out[t] = downsample([[r[0], r[1]] for r in rows], 48)
         return {"range": range_key, "series": out}
@@ -179,7 +179,17 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, payload, status: int = 200) -> None:
         self._send(status, json.dumps(payload, separators=(",", ":"), allow_nan=False).encode(), "application/json")
 
+    def _local_host(self) -> bool:
+        """Only answer requests addressed to this machine. A web page can point its own hostname at
+        127.0.0.1 (DNS rebinding) and then read this server as same-origin; its requests still carry
+        that hostname, so anything but a loopback Host is refused."""
+        host = (self.headers.get("Host") or "").strip().lower()
+        name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
+        return name in ("127.0.0.1", "localhost", "[::1]")
+
     def do_GET(self):  # noqa: N802 (http.server API)
+        if not self._local_host():
+            return self._json({"error": "forbidden", "detail": "unexpected Host header"}, 403)
         url = urlparse(self.path)
         q = {k: v[-1] for k, v in parse_qs(url.query).items()}
         try:
@@ -219,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Fairline") != "1":
             return False
         origin = self.headers.get("Origin")
-        return origin is None or origin == f"http://{self.headers.get('Host', '')}"
+        return self._local_host() and (origin is None or origin == f"http://{self.headers.get('Host', '')}")
 
     def do_POST(self):  # noqa: N802 (http.server API)
         url = urlparse(self.path)
