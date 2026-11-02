@@ -24,6 +24,7 @@ import heapq
 import json
 import logging
 from collections import deque
+from collections.abc import Iterable
 import signal
 import time
 
@@ -31,7 +32,7 @@ from tape.config import data_dir
 
 from . import db
 from .state import ET, BoardState
-from .tapefiles import StreamTailer, key_for_ms, next_key, read_records, stream_files
+from .tapefiles import HourRecords, StreamTailer, key_for_ms, next_key, stream_files
 
 log = logging.getLogger("board.indexer")
 STREAMS = ("kalshi_ws", "kalshi_rest", "odds")
@@ -50,8 +51,9 @@ def apply(state: BoardState, stream: str, rec: dict) -> None:
         state.apply_odds(rec)
 
 
-def merged(batches: dict[str, list[dict]]):
-    """Records from several streams in receive-time order (each batch is already in order)."""
+def merged(batches: dict[str, Iterable[dict]]):
+    """Records from several streams in receive-time order (each batch is already in order). Batches
+    may be lists or HourRecords, which are read as the merge goes."""
     def keyed(stream, recs):
         for i, r in enumerate(recs):
             yield (r.get("recv_ts_ms") or 0, stream, i, r)
@@ -60,6 +62,7 @@ def merged(batches: dict[str, list[dict]]):
 
 
 FOLLOW_BATCH = 50_000
+HOUR_FLUSH = 100_000  # applying a closed hour writes to the database this often, not only at its end
 
 
 def take_aligned(buffers: dict[str, deque], caught_up: dict[str, bool]) -> dict[str, list[dict]]:
@@ -80,9 +83,9 @@ def take_aligned(buffers: dict[str, deque], caught_up: dict[str, bool]) -> dict[
 
 
 class _NoGC:
-    """Applying a dense hour holds millions of records in memory at once, and Python 3.14's collector
-    re-walks them all repeatedly (a whole-tape rebuild stalled in it for minutes per hour). Applying
-    records creates no reference cycles, so collection waits until the batch is done."""
+    """Applying a dense hour allocates millions of records, and Python 3.14's collector re-walks
+    everything still alive each time it runs (a whole-tape rebuild stalled in it for minutes per hour).
+    Applying records creates no reference cycles, so collection waits until the batch is done."""
 
     def __enter__(self):
         self.was = gc.isenabled()
@@ -181,19 +184,35 @@ class Indexer:
             self._replay_hours(files, hours, time.time())
         return {s: next_key(max(files[s])) if files[s] else starts[s] for s in STREAMS}
 
+    def _apply_hour(self, files: dict, hour) -> tuple[int, dict[str, int]]:
+        """Apply one closed hour, its streams merged by receive time and read from the files as the
+        merge goes, writing to the database every HOUR_FLUSH records. Returns the records applied and
+        each stream's count of unreadable lines."""
+        readers = {s: HourRecords(files[s][hour]) for s in STREAMS if hour in files[s]}
+        count = pending = 0
+        prev = None
+        for stream, rec in merged(readers):
+            ts = rec.get("recv_ts_ms") or 0
+            # Never between two records received in the same millisecond: the stored checkpoint is a
+            # receive time, and a resume keeps only history received after it.
+            if pending >= HOUR_FLUSH and ts != prev:
+                self.writer.flush(self.state, self.state.drain())
+                pending = 0
+            apply(self.state, stream, rec)
+            count += 1
+            pending += 1
+            prev = ts
+        self.writer.flush(self.state, self.state.drain())
+        for s in readers:
+            self.applied.add((s, hour))
+        return count, {s: r.bad for s, r in readers.items()}
+
     def _replay_hours(self, files: dict, hours: list, started: float) -> None:
         count = bad = 0
         for i, hour in enumerate(hours, 1):
-            batches = {}
-            for s in STREAMS:
-                if hour in files[s]:
-                    batches[s], n_bad = read_records(files[s][hour])
-                    bad += n_bad
-                    self.applied.add((s, hour))
-            for stream, rec in merged(batches):
-                apply(self.state, stream, rec)
-                count += 1
-            self.writer.flush(self.state, self.state.drain())
+            n, n_bad = self._apply_hour(files, hour)
+            count += n
+            bad += sum(n_bad.values())
             if i % 6 == 0 or i == len(hours):
                 log.info("  replayed %s %s:00 UTC (%d/%d hours, %d records, %.0fs)", hour[0], hour[1], i, len(hours), count, time.time() - started)
         if bad:
@@ -237,16 +256,10 @@ class Indexer:
 
     def _apply_hours(self, files: dict, hours: list) -> None:
         for hour in hours:
-            batches = {}
-            for s in STREAMS:
-                if hour in files[s]:
-                    batches[s], n_bad = read_records(files[s][hour])
-                    if n_bad:
-                        log.warning("%s %s %s:00: skipped %d unreadable lines", s, hour[0], hour[1], n_bad)
-                    self.applied.add((s, hour))
-            for stream, rec in merged(batches):
-                apply(self.state, stream, rec)
-            self.writer.flush(self.state, self.state.drain())
+            _, n_bad = self._apply_hour(files, hour)
+            for s, n in n_bad.items():
+                if n:
+                    log.warning("%s %s %s:00: skipped %d unreadable lines", s, hour[0], hour[1], n)
 
     def follow_copied(self) -> None:
         """EC2 mode: wait for infra/fl pull to copy more hours, and apply them."""

@@ -39,23 +39,33 @@ def stream_files(root: Path, stream: str) -> dict[Key, Path]:
     return found
 
 
-def read_records(path: Path) -> tuple[list[dict], int]:
-    """Every complete record in one closed hour file, plus the count of unreadable lines."""
-    opener = gzip.open if path.name.endswith(".gz") else open
-    records, bad = [], 0
-    try:
-        with opener(path, "rb") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except ValueError:
-                    bad += 1
-    except (EOFError, OSError) as exc:  # a truncated .gz: keep what was readable, and say so
-        log.warning("%s: unreadable after %d records (%r)", path, len(records), exc)
-        bad += 1
-    return records, bad
+class HourRecords:
+    """Every complete record in one closed hour file, read as it is iterated: a Sunday hour from the
+    EC2 recorder is over 11 million records (4 GB of JSON), far too many to hold at once. `bad` counts
+    the unreadable lines met so far."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.bad = 0
+
+    def __iter__(self):
+        opener = gzip.open if self.path.name.endswith(".gz") else open
+        n = 0
+        try:
+            with opener(self.path, "rb") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        self.bad += 1
+                        continue
+                    n += 1
+                    yield rec
+        except (EOFError, OSError) as exc:  # a truncated .gz: keep what was readable, and say so
+            log.warning("%s: unreadable after %d records (%r)", self.path, n, exc)
+            self.bad += 1
 
 
 def key_for_ms(ts_ms: int) -> Key:

@@ -303,6 +303,38 @@ def test_indexer_replays_closed_hours_into_database(tmp_path, monkeypatch):
     idx.conn.close()
 
 
+def test_a_closed_hour_is_streamed_and_checkpointed_between_receive_times(tmp_path, monkeypatch):
+    """A Sunday hour from the EC2 recorder is over 11 million records, so the indexer reads it as it
+    applies it and writes to the database part-way through, but never between two records received
+    in the same millisecond: the checkpoint is a receive time, and a resume keeps only what follows it."""
+    import board.indexer as indexer
+
+    monkeypatch.setenv("FAIRLINE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(indexer, "HOUR_FLUSH", 3)  # due mid-pair: after the first delta of each millisecond
+    checkpoints = []
+    flush = db.Writer.flush
+
+    def recording_flush(self, state, drained):
+        rev = flush(self, state, drained)
+        checkpoints.append(int(db.get_meta(self.conn, "last_ts_ms")))
+        return rev
+
+    monkeypatch.setattr(db.Writer, "flush", recording_flush)
+    deltas = [ws(T0 + 2000 + i // 2 * 1000, "orderbook_delta",
+                 {"market_ticker": DAL, "price_dollars": "0.8000", "delta_fp": "1.00", "side": "yes"}, seq=2 + i)
+              for i in range(6)]  # received two per millisecond
+    lines = [json.dumps(r) for r in [markets_record(T0), snapshot(T0 + 1000), *deltas]]
+    path = _hour(tmp_path, "kalshi_ws", "2026-10-07", "17").with_suffix(".jsonl.gz")
+    path.write_bytes(gzip.compress(("\n".join(lines[:3] + ["{not json"] + lines[3:]) + "\n").encode()))
+    idx = indexer.Indexer()
+    idx.replay()
+    assert checkpoints == [T0 + 2000, T0 + 4000]  # each held until its millisecond was complete
+    conn = db.connect(tmp_path / "board.db", readonly=True)
+    assert tuple(conn.execute("SELECT bid, bid_qty FROM market_state WHERE ticker = ?", (DAL,)).fetchone()) == (0.80, 6)
+    conn.close()
+    idx.conn.close()
+
+
 def test_follow_starts_after_the_last_replayed_hour(tmp_path, monkeypatch):
     """Hours copied down from the EC2 recorder after start-up are still read, never skipped."""
     monkeypatch.setenv("FAIRLINE_DATA_DIR", str(tmp_path))
