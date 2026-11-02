@@ -19,6 +19,9 @@ if [ ! -f /swapfile ]; then
   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 fi
 
+sudo install -m 644 infra/sshd-fairline.conf /etc/ssh/sshd_config.d/10-fairline.conf
+sudo sshd -t && sudo systemctl reload ssh
+
 touch ~/.hushlogin  # no login banner in infra/fl output
 mkdir -p data/logs data/run secrets
 chmod 700 secrets

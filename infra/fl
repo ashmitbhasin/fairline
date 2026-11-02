@@ -2,8 +2,9 @@
 # The EC2 recorder, driven from the laptop. Run from anywhere in the repo: infra/fl <command>
 #
 #   up         create (or find) the instance, its SSH key, firewall and fixed IP; needs `aws login`
-#   allow-ip   let this network's IP reach SSH (after changing Wi-Fi); lists the other IPs still allowed
-#   forget-ip IP  stop allowing an IP you no longer use
+#   open-ssh   let any IP reach SSH (key-only login) so changing networks never blocks the pull; needs `aws login`
+#   allow-ip   let only this network's IP reach SSH; lists the other IPs still allowed
+#   forget-ip IP  stop allowing an IP or CIDR (forget-ip 0.0.0.0/0, then allow-ip, undoes open-ssh)
 #   install    copy the code, .env and secrets/, then set up Python and systemd on the server
 #   cutover    stop the laptop's recorders, hand the open hour to the server, start the recorders there
 #   deploy     copy code changes and restart the server's recorders, one at a time
@@ -73,6 +74,10 @@ allow_ip() {
   need_aws
   local sg ip others
   sg=$(sg_or_die) || exit 1
+  if ssh_cidrs "$sg" | grep -qxF 0.0.0.0/0; then
+    echo "SSH is open to any address (infra/fl open-ssh); forget-ip 0.0.0.0/0 first to allow only this one"
+    return
+  fi
   ip=$(curl -fsS https://checkip.amazonaws.com)
   if ssh_cidrs "$sg" | grep -qx "$ip/32"; then
     echo "SSH already open to $ip"
@@ -86,10 +91,34 @@ allow_ip() {
 
 forget_ip() {
   need_aws
-  local sg
+  local sg cidr=$1
   sg=$(sg_or_die) || exit 1
-  aws_ ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "${1%/32}/32" >/dev/null
-  echo "SSH closed to ${1%/32}"
+  case "$cidr" in */*) ;; *) cidr=$cidr/32 ;; esac
+  aws_ ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "$cidr" >/dev/null
+  echo "SSH closed to $cidr"
+}
+
+# Per-IP rules lock the laptop out whenever its network changes, and re-allowing needs an AWS session,
+# which the unattended pull doesn't have. With key-only login (infra/sshd-fairline.conf, installed by
+# setup.sh) port 22 can be open to every address instead; the per-IP rules it covers are dropped.
+open_ssh() {
+  need_aws
+  need_host
+  local sg conf cidr
+  sg=$(sg_or_die) || exit 1
+  conf=$(ssh_ 'sudo sshd -T') || { echo "SSH didn't answer. Run infra/fl allow-ip first."; exit 1; }
+  grep -qx 'authenticationmethods publickey' <<<"$conf" || { echo "The server still accepts more than keys. Run: infra/fl install"; exit 1; }
+  if ssh_cidrs "$sg" | grep -qxF 0.0.0.0/0; then
+    echo "SSH already open to any address"
+  else
+    aws_ ec2 authorize-security-group-ingress --group-id "$sg" --ip-permissions \
+      '[{"IpProtocol":"tcp","FromPort":22,"ToPort":22,"IpRanges":[{"CidrIp":"0.0.0.0/0","Description":"any address, key-only login"}]}]' >/dev/null
+    echo "SSH open to any address (key-only login)"
+  fi
+  for cidr in $(ssh_cidrs "$sg" | grep -vxF 0.0.0.0/0 || true); do
+    aws_ ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "$cidr" >/dev/null
+    echo "dropped $cidr (covered now)"
+  done
 }
 
 instance_id() {
@@ -240,6 +269,7 @@ pull() {
 
 case "${1:-}" in
   up) up ;;
+  open-ssh) open_ssh ;;
   allow-ip) allow_ip ;;
   forget-ip) forget_ip "${2:?which IP?}" ;;
   install) install ;;
