@@ -200,6 +200,7 @@ main { padding-top: var(--chrome-h); }
 .gate-read .when { display: block; font-family: var(--sc-font-mono); color: var(--sc-ink); }
 .gate-read .verdict { display: block; color: var(--muted); }
 .gate-read .verdict--no { color: var(--down); }
+.gate-read .verdict--go { color: var(--sc-accent); }
 .gates__quote { margin-top: 26px; font-size: 15px; color: var(--sc-ink); }
 .gates__quote span { color: var(--muted); font-size: 13px; margin-left: 6px; }
 

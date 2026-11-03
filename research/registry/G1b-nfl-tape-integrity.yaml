@@ -1,0 +1,20 @@
+id: G1b-nfl-tape-integrity
+registered: 2026-11-03
+reason: "G1 asks for NFL and NBA core markets, each mapped to an Odds API event and an nflverse/NBA game id. The
+  recorders have run NFL only since Week 1 (tape/ctl.py passes --league nfl) and no nflverse id is stored, so G1
+  cannot pass as written. The NFL gates still need to know whether the NFL tape can be trusted. This gate keeps
+  G1's thresholds and minimum sample unchanged and narrows only the scope: NFL, mapped to Odds API events. It was
+  registered on Nov 3, after G1's second read had been run, which is why nothing here differs from G1 except
+  scope. G1 stays open for NBA and nflverse ids, which G3 and G6 need."
+hypothesis: The recorder captures every core NFL market reliably enough that gates reading NFL tape can trust it.
+data: data/raw/kalshi_ws (primary), data/raw/kalshi_rest (fallback), data/raw/odds; NFL only
+metrics:
+  - uptime in game windows (from 4h before kickoff to 3.5h after), measured from _connected/_disconnected markers
+    and recorder silence, as board/tracker.py measures it
+  - every _gap marker followed by a fresh orderbook_snapshot within 5 s
+  - share of core NFL markets (winner, spread, total) on games kicking off in the window mapped to an Odds API event
+go: uptime >= 99%; 100% of gaps resynced in < 5 s; >= 98% of core markets mapped
+no_go: anything less
+min_sample: 7 consecutive days of recording
+earliest_read: 2026-11-02
+owners: {runs: quant-analyst, reviews: red-team, decides: ashmit}
