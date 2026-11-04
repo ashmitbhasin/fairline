@@ -6,10 +6,21 @@ import yaml
 
 REGISTRY = Path(__file__).resolve().parent.parent / "research" / "registry"
 GATES = sorted(REGISTRY.glob("G*.yaml"))
+ORIGINAL = [f"G{i}" for i in range(1, 8)]  # registered on Oct 6, before any data
 
 
-def test_all_seven_gates_registered():
-    assert [p.name.split("-")[0] for p in GATES] == [f"G{i}" for i in range(1, 8)]
+def test_all_seven_original_gates_registered():
+    ids = [p.name.split("-")[0] for p in GATES]
+    assert [i for i in ids if i in ORIGINAL] == ORIGINAL
+    assert len(set(ids)) == len(ids)
+
+
+def test_a_gate_added_later_gives_its_reason():
+    """A gate changes only by adding a new one, and the new one says why."""
+    for path in GATES:
+        if path.name.split("-")[0] not in ORIGINAL:
+            gate = yaml.safe_load(path.read_text())
+            assert str(gate["registered"]) > "2026-10-06" and gate.get("reason"), path.name
 
 
 @pytest.mark.parametrize("path", GATES, ids=lambda p: p.stem)

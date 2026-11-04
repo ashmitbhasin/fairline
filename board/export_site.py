@@ -31,10 +31,19 @@ OWNER = {"name": "Ashmit Bhasin", "email": "ashsinghbhasin@gmail.com"}
 CUTOVER_MS = int(dt.datetime(2026, 10, 26, 18, 11, 45, tzinfo=ET).timestamp() * 1000)  # recorders start on EC2
 G1_FIRST_READ = {"day": "2026-10-26", "uptime": 0.108, "game_uptime": 0.074, "verdict": "no-go",
                  "why": "The recorder ran on a laptop that slept."}
-G1_REREAD_MS = CUTOVER_MS + 7 * 86_400_000  # seven full days on the server
+# Read on Nov 3 over the first seven days on the server (CUTOVER_MS to CUTOVER_MS + 7 days), with the tracker's
+# uptime functions; G1b was registered that day for the NFL tape (research/registry/G1b-nfl-tape-integrity.yaml).
+G1_SECOND_READ = {"day": "2026-11-03", "uptime": 0.99453, "game_uptime": 0.99386, "verdict": "open",
+                  "label": "Open: no NBA tape yet",
+                  "why": "The NFL tape passed (G1b). NBA was never recorded and no nflverse game id is stored."}
+G1B_READ = {"day": "2026-11-03", "uptime": 0.99453, "game_uptime": 0.99386, "gaps": 0, "mapped": 1.0, "verdict": "go",
+            "why": "First seven days on the server, Oct 26 18:11 to Nov 2 17:11 ET: 638 s blind in 28.8 game-window "
+                   "hours, all at the planned 30-minute reconnect; no sequence gaps; 692 of 692 core markets mapped."}
+READS = {"G1": [G1_FIRST_READ, G1_SECOND_READ], "G1b": [G1B_READ]}
 NAIVE_REPLAY = {"day": "2026-10-15", "rule": "take@2", "won": 1, "lost": 0, "pnl": 57.0}  # commit ec5731e
 
-NAMES = {"paper-maker-clv": "Paper maker CLV", "late-game-calibration": "Late-game calibration"}
+NAMES = {"paper-maker-clv": "Paper maker CLV", "late-game-calibration": "Late-game calibration",
+         "nfl-tape-integrity": "NFL tape integrity"}
 VARIANT_FIELDS = ("id", "rule", "param", "primary", "bets", "settled", "won", "lost", "tied", "pending",
                   "pnl", "staked", "roi", "clv_n", "clv_mean", "clv_ci", "beat_close")
 
@@ -52,10 +61,7 @@ def gate_rows(registry: Path) -> list[dict]:
         name = NAMES.get(slug, slug.replace("-", " ").capitalize())
         row = {"id": gid, "name": name, "registered": str(g["registered"]),
                "hypothesis": g["hypothesis"], "go": g["go"], "no_go": g.get("no_go"),
-               "earliest_read": str(g.get("earliest_read", "")).split(" ")[0], "reads": []}
-        if gid == "G1":
-            row["reads"].append(G1_FIRST_READ)
-            row["next_read_ms"] = G1_REREAD_MS
+               "earliest_read": str(g.get("earliest_read", "")).split(" ")[0], "reads": list(READS.get(gid, []))}
         rows.append(row)
     return rows
 
@@ -100,12 +106,13 @@ def build(data: Path, tracker: dict, now: int) -> dict:
     finally:
         conn.close()
     from fairvalue.fees import MAKER_COEF, TAKER_COEF
+    gates = gate_rows(ROOT / "research" / "registry")
     return {
         "as_of_ms": now,
         "as_of": dt.datetime.fromtimestamp(now / 1000, ET).strftime("%b %-d, %Y, %-I:%M %p ET"),
         "owner": OWNER,
         "desk": {"games": games, "markets": markets, "matched_markets": g2.get("markets"),
-                 "side_minutes": g2.get("side_minutes"), "gates": 7},
+                 "side_minutes": g2.get("side_minutes"), "gates": len(gates)},
         "tape": tape_summary(data, now),
         "kickoff": {
             "rows": (g2.get("by_lead") or {}).get("rows", []),
@@ -119,7 +126,7 @@ def build(data: Path, tracker: dict, now: int) -> dict:
             "params": paper.get("params"),
             "naive": NAIVE_REPLAY,
         },
-        "gates": gate_rows(ROOT / "research" / "registry"),
+        "gates": gates,
     }
 
 

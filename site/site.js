@@ -80,13 +80,15 @@
       list.appendChild(li);
     });
     var s = D.tape.since_cutover;
+    var g1b = D.gates.filter(function (g) { return g.id === 'G1b' && g.reads.length; }).map(function (g) { return g.reads[0]; })[0];
     var end = $('.tape__end');
     end.innerHTML = '<p class="tape__end-h">Since the move</p>' +
       '<p><span class="num">' + pct(s.uptime, 2) + '</span> of the time seen, over <span class="num">' + int(s.hours) + '</span> hours: ' +
       '<span class="num">' + int(s.blind_s) + '</span> seconds blind across <span class="num">' + int(s.outages) + '</span> reconnects, ' +
       '<span class="num">' + int(s.gaps) + '</span> sequence gaps.</p>' +
-      '<p>The first read of G1, on Oct 26, failed at <span class="num">' + pct(D.gates[0].reads[0].uptime, 1) + '</span>: the laptop slept. It is read again after ' +
-      fWhen.format(new Date(D.gates[0].next_read_ms)) + ' ET, on seven days from the server.</p>';
+      '<p>The first read of G1, on Oct 26, failed at <span class="num">' + pct(D.gates[0].reads[0].uptime, 1) + '</span>: the laptop slept. ' +
+      (g1b ? 'Over the first seven days on the server the NFL tape passed, <span class="num">' + pct(g1b.game_uptime, 2) +
+        '</span> seen in game windows with no sequence gaps (gate G1b). G1 itself stays open: NBA has not been recorded.' : '') + '</p>';
   }
 
   // ---------- 3 · fair value: the same formulas as fairvalue/odds.py, devig.py and fees.py ----------
@@ -335,13 +337,15 @@
       var read;
       if (g.reads && g.reads.length) {
         var r = g.reads[g.reads.length - 1];
-        read = '<span class="when">' + dateLabel(r.day) + '</span><span class="verdict verdict--no">No-go, ' + pct(r.uptime, 1) + ' uptime</span>' +
+        var label = r.label || (r.verdict === 'go' ? 'Go, ' + pct(r.game_uptime, 2) + ' in game windows' : 'No-go, ' + pct(r.uptime, 1) + ' uptime');
+        var cls = r.verdict === 'go' ? ' verdict--go' : r.verdict === 'no-go' ? ' verdict--no' : '';
+        read = '<span class="when">' + dateLabel(r.day) + '</span><span class="verdict' + cls + '">' + label + '</span>' +
           (g.next_read_ms ? '<span class="verdict">Again after ' + fWhen.format(new Date(g.next_read_ms)) + '</span>' : '');
       } else {
         read = '<span class="when">' + (g.earliest_read ? dateLabel(g.earliest_read) : 'n/a') + '</span><span class="verdict">Not read yet</span>';
       }
       tr.innerHTML = '<td><span class="gate-id">' + g.id + '</span><span class="gate-name"></span></td><td class="gate-q"></td><td class="gate-bar"></td><td class="gate-read">' + read + '</td>';
-      tr.querySelector('.gate-name').textContent = g.name;
+      tr.querySelector('.gate-name').textContent = g.name + (g.registered > '2026-10-06' ? ', added ' + dateLabel(g.registered) : '');
       tr.querySelector('.gate-q').textContent = tidy(g.hypothesis);
       tr.querySelector('.gate-bar').textContent = tidy(g.go);
       body.appendChild(tr);
