@@ -2,7 +2,7 @@
 
 An agent-run market-making desk for sports prediction markets. It borrows the sharpest price in the world, rents it out on Kalshi, and uses a team of AI agents to keep it honest and fast. Phase 0 is six weeks of building and measuring with no money at risk.
 
-**Status:** Phase 0, Week 5 (Nov 3–9, 2026). The recorders run on an always-on server. The NFL tape passed its integrity gate (G1b) on Nov 3: 99.39% uptime in game windows over the first seven days on the server, no sequence gaps, every core market mapped to an Odds API event. G1 stays open: NBA has not been recorded and no nflverse game ids are stored. Nothing in this repo places orders.
+**Status:** Phase 0, Week 5 (Nov 3–9, 2026). The recorders run on an always-on server. The NFL tape passed its integrity gate (G1b) on Nov 3: 99.39% uptime in game windows over the first seven days on the server, no sequence gaps, every core market mapped to an Odds API event. G1 stays open: NBA has not been recorded and no nflverse game ids are stored. G2 can't be read as written, because the laptop saw only 17% and 9% of Weeks 6 and 7, so G2b reads the same bar on Weeks 8–10 after Nov 16. Week 8 alone had 22.1 qualifying side-hours against a bar of several dozen. Nothing in this repo places orders.
 
 ## What's here
 
@@ -15,7 +15,7 @@ An agent-run market-making desk for sports prediction markets. It borrows the sh
 | `tape/book.py` | Rebuilds order books from snapshots and deltas; detects sequence gaps. |
 | `fairvalue/devig.py` | Margin removal: multiplicative, additive, power, Shin. |
 | `fairvalue/fees.py` | Kalshi taker and maker fees, break-even, fractional Kelly. |
-| `research/registry/` | Gates G1–G7 and kill criteria, committed before the data they judge, and G1b (NFL tape integrity), added on Nov 3 with its reason. |
+| `research/registry/` | Gates G1–G7 and kill criteria, committed before the data they judge, and G1b (NFL tape integrity) and G2b (divergence on the server's weeks), added in November with their reasons. |
 | `config/blocklist.yaml` | Markets the desk must never trade (Indiana University teams). |
 | `tape/ctl.py` | Starts, stops and checks every service as a background process that survives VS Code restarts (under systemd on EC2). |
 | `infra/` | The EC2 recorder: `fl` drives it from the laptop, `setup.sh` and `fairline@.service` run on the server. |

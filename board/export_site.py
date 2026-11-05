@@ -39,11 +39,20 @@ G1_SECOND_READ = {"day": "2026-11-03", "uptime": 0.99453, "game_uptime": 0.99386
 G1B_READ = {"day": "2026-11-03", "uptime": 0.99453, "game_uptime": 0.99386, "gaps": 0, "mapped": 1.0, "verdict": "go",
             "why": "First seven days on the server, Oct 26 18:11 to Nov 2 17:11 ET: 638 s blind in 28.8 game-window "
                    "hours, all at the planned 30-minute reconnect; no sequence gaps; 692 of 692 core markets mapped."}
-READS = {"G1": [G1_FIRST_READ, G1_SECOND_READ], "G1b": [G1B_READ]}
+# Looked at on Nov 4 with board/paper.py's minute replay, games grouped by NFL week of kickoff (Tue-Mon ET). G2's
+# Weeks 6-8 can't be read (the laptop saw 17% and 9% of Weeks 6 and 7), so G2b reads the same bar on Weeks 8-10.
+G2_READ = {"day": "2026-11-04", "verdict": "void", "label": "Can't be read: Weeks 6-7 unseen",
+           "why": "The recorder saw 17% of Week 6's pregame minutes and 9% of Week 7's. Read as G2b on Weeks 8-10."}
+G2B_LOOK = {"day": "2026-11-04", "verdict": "look", "label": "Week 8: 22.1 side-hours", "week": 8,
+            "qualifying_hours": 22.1, "qualifying_hours_per_outcome": 13.0, "side_hours": 5734.6, "seen": 0.938,
+            "mean_abs_gap": 0.0065, "why": "Week 8 only, before Weeks 9 and 10: below several dozen side-hours, with "
+                                           "19.6 of the 22.1 from game-winner markets."}
+READS = {"G1": [G1_FIRST_READ, G1_SECOND_READ], "G1b": [G1B_READ], "G2": [G2_READ], "G2b": [G2B_LOOK]}
+NEXT_READ_MS = {"G2b": int(dt.datetime(2026, 11, 17, 12, tzinfo=ET).timestamp() * 1000)}  # Week 10 ends Mon Nov 16
 NAIVE_REPLAY = {"day": "2026-10-15", "rule": "take@2", "won": 1, "lost": 0, "pnl": 57.0}  # commit ec5731e
 
 NAMES = {"paper-maker-clv": "Paper maker CLV", "late-game-calibration": "Late-game calibration",
-         "nfl-tape-integrity": "NFL tape integrity"}
+         "nfl-tape-integrity": "NFL tape integrity", "divergence-server-weeks": "Divergence, server weeks"}
 VARIANT_FIELDS = ("id", "rule", "param", "primary", "bets", "settled", "won", "lost", "tied", "pending",
                   "pnl", "staked", "roi", "clv_n", "clv_mean", "clv_ci", "beat_close")
 
@@ -62,6 +71,8 @@ def gate_rows(registry: Path) -> list[dict]:
         row = {"id": gid, "name": name, "registered": str(g["registered"]),
                "hypothesis": g["hypothesis"], "go": g["go"], "no_go": g.get("no_go"),
                "earliest_read": str(g.get("earliest_read", "")).split(" ")[0], "reads": list(READS.get(gid, []))}
+        if gid in NEXT_READ_MS:
+            row["next_read_ms"] = NEXT_READ_MS[gid]
         rows.append(row)
     return rows
 

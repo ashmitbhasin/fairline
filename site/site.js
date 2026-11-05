@@ -49,7 +49,9 @@
       el.setAttribute('data-sc-count', '0 ' + target);
       el.setAttribute('data-sc-count-ms', '1300');
     });
-    var read = D.gates.filter(function (g) { return g.reads && g.reads.length; }).length;
+    var read = D.gates.filter(function (g) { // a verdict, not a look or a gate that can't be read
+      return (g.reads || []).some(function (r) { return r.verdict === 'go' || r.verdict === 'no-go'; });
+    }).length;
     setF('gates_read', String(read));
   }
 
@@ -340,7 +342,7 @@
         var label = r.label || (r.verdict === 'go' ? 'Go, ' + pct(r.game_uptime, 2) + ' in game windows' : 'No-go, ' + pct(r.uptime, 1) + ' uptime');
         var cls = r.verdict === 'go' ? ' verdict--go' : r.verdict === 'no-go' ? ' verdict--no' : '';
         read = '<span class="when">' + dateLabel(r.day) + '</span><span class="verdict' + cls + '">' + label + '</span>' +
-          (g.next_read_ms ? '<span class="verdict">Again after ' + fWhen.format(new Date(g.next_read_ms)) + '</span>' : '');
+          (g.next_read_ms ? '<span class="verdict">Read after ' + fWhen.format(new Date(g.next_read_ms)) + '</span>' : '');
       } else {
         read = '<span class="when">' + (g.earliest_read ? dateLabel(g.earliest_read) : 'n/a') + '</span><span class="verdict">Not read yet</span>';
       }
