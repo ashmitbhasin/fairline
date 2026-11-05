@@ -1,0 +1,22 @@
+id: G2b-divergence-server-weeks
+registered: 2026-11-04
+reason: "G2's minimum sample is Weeks 6-8, but the recorder ran on a laptop that slept until Oct 26 and saw only
+  17% of Week 6's pregame minutes and 9% of Week 7's (Week 8: 94%). G1's rule says no gate is read on tape that
+  failed integrity, and G1b passed only for the server's tape, so G2 can never be read as written. This gate keeps
+  G2's hypothesis, metric and bars unchanged and moves the three weeks to the first three recorded on the server,
+  Weeks 8-10. It was registered on Nov 4, after a look at Week 8 (22.1 qualifying side-hours; 13.0 counting each
+  outcome once), with Weeks 9 and 10 still to be played. Which count is a 'side' is not settled, so both are
+  reported; it did not change Week 8's answer."
+hypothesis: Kalshi mids sit far enough from devigged Pinnacle often enough to be worth quoting around.
+data: Kalshi mid from the server's tape; Pinnacle h2h/spreads/totals from the Odds API, devigged with the power method
+metric: "absolute gap between devigged Pinnacle and the Kalshi mid, per side per minute, from market open to kickoff,
+  minus half the Kalshi spread; reported as side-hours per NFL week above the threshold. Measured by board/paper.py's
+  minute replay: only minutes the recorder saw, with a Pinnacle price under 35 minutes old and an uncrossed book.
+  A game belongs to the NFL week (Tuesday to Monday, ET) of its kickoff; Week 8 is Oct 27 - Nov 2. Sides are
+  counted two ways: every Kalshi market matched to a Pinnacle line, and each outcome once (the away team's winner
+  market dropped)."
+go: several dozen side-hours per NFL week with a gap >= 2c beyond half the spread
+no_go: distribution matches BetFirm's 0.9c average with no persistent tail
+min_sample: 3 full NFL weeks recorded on the server (Weeks 8-10)
+earliest_read: 2026-11-17
+owners: {runs: quant-analyst, reviews: red-team, decides: ashmit}

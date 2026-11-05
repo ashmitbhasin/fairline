@@ -6,6 +6,7 @@
     python -m tape.ctl restart board    # stop + start (picks up code changes)
     python -m tape.ctl logs kalshi-live # follow one service's log
     python -m tape.ctl run kalshi-live  # run one service in the foreground (what systemd calls on EC2)
+    python -m tape.ctl autostart on     # start the board and pull at each Mac login (launchd); off removes it
 
 Services: kalshi-live, kalshi-backup, odds (recorders); board (indexer -> data/board.db) and
 board-web (dashboard at http://127.0.0.1:8765).
@@ -18,13 +19,15 @@ On the EC2 recorder (infra/) systemd runs each service as fairline@<name> and re
 dies; there start/stop/restart go through systemctl and status reads the same PID files. Once
 infra/fl has set up that server, the laptop runs only the board and `pull`, which copies the
 server's closed tape hours and recorder logs down every 10 minutes; recorders start here only when
-named (a fallback that also spends Odds API credits twice if the server is recording).
+named (a fallback that also spends Odds API credits twice if the server is recording). `autostart on`
+installs a launchd agent that starts those three at each login, so a reboot doesn't leave them stopped.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import os
+import plistlib
 import shutil
 import signal
 import subprocess
@@ -57,6 +60,9 @@ SERVICES: dict[str, dict] = {**RECORDERS, **BOARD, **PULL}
 REMOTE_RECORDER = ROOT / "infra" / "ssh_config"
 AWAKE = "caffeinate" if sys.platform == "darwin" else None
 SYSTEMD_UNIT = Path("/etc/systemd/system/fairline@.service")
+LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.fairline.autostart.plist"
+# Outside the repo: if macOS stops launchd's processes reading ~/Desktop, the error still lands here.
+LAUNCH_LOG = Path.home() / "Library" / "Logs" / "fairline-autostart.log"
 
 
 def run_dir() -> Path:
@@ -240,6 +246,33 @@ def systemd(command: str, names: list[str]) -> int:
     return code
 
 
+def autostart(switch: str) -> int:
+    """Install (on) or remove (off) the launchd agent that starts the board and pull at each login."""
+    if sys.platform != "darwin":
+        print("autostart is for the Mac; on EC2 systemd starts the services at boot")
+        return 1
+    label = LAUNCH_AGENT.stem
+    domain = f"gui/{os.getuid()}"
+    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)  # fails if not loaded
+    if switch == "off":
+        LAUNCH_AGENT.unlink(missing_ok=True)
+        print(f"autostart off: removed {LAUNCH_AGENT}")
+        return 0
+    names = [*BOARD, *PULL]  # named, never default_names(): without infra/ssh_config that list has recorders
+    LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
+    LAUNCH_AGENT.write_bytes(plistlib.dumps({
+        "Label": label,
+        "ProgramArguments": [PYTHON, "-m", "tape.ctl", "start", *names],
+        "WorkingDirectory": str(ROOT),  # where -m finds tape
+        "RunAtLoad": True,
+        "StandardOutPath": str(LAUNCH_LOG),
+        "StandardErrorPath": str(LAUNCH_LOG),
+    }))
+    code = subprocess.run(["launchctl", "bootstrap", domain, str(LAUNCH_AGENT)]).returncode
+    print(f"autostart on: {LAUNCH_AGENT} runs `tape.ctl start {' '.join(names)}` at each login, log {LAUNCH_LOG}")
+    return code
+
+
 def logs(names: list[str]) -> int:
     path = log_path(names[0])
     if not path.exists():
@@ -250,9 +283,16 @@ def logs(names: list[str]) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["start", "stop", "restart", "status", "logs", "run"])
-    parser.add_argument("names", nargs="*", choices=[[], *SERVICES], help="default: everything")
+    parser.add_argument("command", choices=["start", "stop", "restart", "status", "logs", "run", "autostart"])
+    parser.add_argument("names", nargs="*", choices=[[], *SERVICES, "on", "off"],
+                        help="default: everything; autostart takes on or off")
     args = parser.parse_args()
+    if args.command == "autostart":
+        if args.names not in (["on"], ["off"]):
+            parser.error("autostart takes on or off")
+        sys.exit(autostart(args.names[0]))
+    if {"on", "off"} & set(args.names):
+        parser.error("on and off go with autostart")
     names = args.names or default_names()
     if args.command in ("logs", "run") and len(names) != 1:
         parser.error(f"{args.command} takes exactly one name: " + ", ".join(SERVICES))

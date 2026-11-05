@@ -2,7 +2,7 @@
 
 An agent-run market-making desk for sports prediction markets. It borrows the sharpest price in the world, rents it out on Kalshi, and uses a team of AI agents to keep it honest and fast. Phase 0 is six weeks of building and measuring with no money at risk.
 
-**Status:** Phase 0, Week 5 (Nov 3–9, 2026). The recorders run on an always-on server. The NFL tape passed its integrity gate (G1b) on Nov 3: 99.39% uptime in game windows over the first seven days on the server, no sequence gaps, every core market mapped to an Odds API event. G1 stays open: NBA has not been recorded and no nflverse game ids are stored. Nothing in this repo places orders.
+**Status:** Phase 0, Week 5 (Nov 3–9, 2026). The recorders run on an always-on server. The NFL tape passed its integrity gate (G1b) on Nov 3: 99.39% uptime in game windows over the first seven days on the server, no sequence gaps, every core market mapped to an Odds API event. G1 stays open: NBA has not been recorded and no nflverse game ids are stored. G2 can't be read as written, because the laptop saw only 17% and 9% of Weeks 6 and 7, so G2b reads the same bar on Weeks 8–10 after Nov 16. Week 8 alone had 22.1 qualifying side-hours against a bar of several dozen. Nothing in this repo places orders.
 
 ## What's here
 
@@ -15,7 +15,7 @@ An agent-run market-making desk for sports prediction markets. It borrows the sh
 | `tape/book.py` | Rebuilds order books from snapshots and deltas; detects sequence gaps. |
 | `fairvalue/devig.py` | Margin removal: multiplicative, additive, power, Shin. |
 | `fairvalue/fees.py` | Kalshi taker and maker fees, break-even, fractional Kelly. |
-| `research/registry/` | Gates G1–G7 and kill criteria, committed before the data they judge, and G1b (NFL tape integrity), added on Nov 3 with its reason. |
+| `research/registry/` | Gates G1–G7 and kill criteria, committed before the data they judge, and G1b (NFL tape integrity) and G2b (divergence on the server's weeks), added in November with their reasons. |
 | `config/blocklist.yaml` | Markets the desk must never trade (Indiana University teams). |
 | `tape/ctl.py` | Starts, stops and checks every service as a background process that survives VS Code restarts (under systemd on EC2). |
 | `infra/` | The EC2 recorder: `fl` drives it from the laptop, `setup.sh` and `fairline@.service` run on the server. |
@@ -64,6 +64,8 @@ infra/fl cutover            # stop the laptop's recorders, hand the open hour ov
 ```
 
 Day to day: `infra/fl status`, `infra/fl logs kalshi-live`, `infra/fl deploy` after changing recorder code (restarts them one at a time), `infra/fl sync-code` for changes that need no restart, `infra/fl pull` to copy the tape down now, `infra/fl allow-ip` after changing networks (`infra/fl forget-ip IP` drops an old one; `infra/fl forget-ip 0.0.0.0/0` undoes `open-ssh`). The same are under **Run Task… → EC2: …**. Once the server exists, `tape.ctl start` on the laptop starts the board and `pull` only; name a recorder to run it here as a fallback (that spends Odds API credits twice while the server also records).
+
+Those three laptop services don't come back by themselves after a reboot: on Nov 3 they stayed down for 17 hours and the board went stale. `tape.ctl autostart on` installs a launchd agent, `~/Library/LaunchAgents/com.fairline.autostart.plist`, that runs `tape.ctl start board board-web pull` at each login; `tape.ctl autostart off` removes it. The agent names the three services, so it never starts a recorder here, even if `infra/ssh_config` goes missing. Its output goes to `~/Library/Logs/fairline-autostart.log`. Run `autostart on` again after moving the repo or rebuilding the venv, since the agent holds their paths. Programs started by launchd need macOS's permission to read `~/Desktop`, and macOS grants it per program, here the venv's python.org Python 3.14 (listed as **Python** or `python3.14`). Without it every service fails with "Operation not permitted", as the indexer did on Oct 19. To fix that, turn on its Desktop Folder switch under **System Settings → Privacy & Security → Files and Folders**, add `/Library/Frameworks/Python.framework/Versions/3.14/Resources/Python.app` (the process that runs) to **Full Disk Access**, or move the repo out of `~/Desktop`.
 
 The instance has termination protection and its disk is kept if the instance is ever deleted. The Kalshi key copied to the server can trade: SSH takes only the key in ~/.ssh/fairline.pem (no passwords, no root, three tries per connection), and `.env` and `secrets/` are readable only by the ubuntu user.
 

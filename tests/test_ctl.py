@@ -48,6 +48,48 @@ def test_no_caffeinate_off_the_mac():
     assert (ctl.AWAKE == "caffeinate") == (ctl.sys.platform == "darwin")
 
 
+@pytest.fixture
+def launchctl(tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(ctl, "LAUNCH_AGENT", tmp_path / "LaunchAgents" / "com.fairline.autostart.plist")
+    monkeypatch.setattr(ctl.sys, "platform", "darwin")
+    monkeypatch.setattr(ctl.os, "getuid", lambda: 501)
+    monkeypatch.setattr(ctl.subprocess, "run", lambda cmd, **kw: commands.append(cmd) or type("R", (), {"returncode": 0})())
+    return commands
+
+
+def test_autostart_on_starts_only_the_laptop_services_at_login(launchctl):
+    assert ctl.autostart("on") == 0
+    agent = ctl.plistlib.loads(ctl.LAUNCH_AGENT.read_bytes())
+    assert agent["ProgramArguments"] == [ctl.PYTHON, "-m", "tape.ctl", "start", "board", "board-web", "pull"]
+    assert agent["WorkingDirectory"] == str(ctl.ROOT) and agent["RunAtLoad"] is True
+    # Reloaded, so a second `on` picks up a moved repo or venv.
+    assert launchctl == [["launchctl", "bootout", "gui/501/com.fairline.autostart"],
+                         ["launchctl", "bootstrap", "gui/501", str(ctl.LAUNCH_AGENT)]]
+
+
+def test_autostart_off_unloads_and_removes_the_agent(launchctl):
+    ctl.autostart("on")
+    launchctl.clear()
+    assert ctl.autostart("off") == 0
+    assert not ctl.LAUNCH_AGENT.exists()
+    assert launchctl == [["launchctl", "bootout", "gui/501/com.fairline.autostart"]]
+
+
+def test_autostart_is_mac_only(launchctl, monkeypatch):
+    monkeypatch.setattr(ctl.sys, "platform", "linux")
+    assert ctl.autostart("on") == 1
+    assert launchctl == [] and not ctl.LAUNCH_AGENT.exists()
+
+
+@pytest.mark.parametrize("argv", [["autostart"], ["autostart", "board"], ["start", "on"]])
+def test_autostart_switch_goes_only_with_autostart(argv, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["ctl", *argv])
+    with pytest.raises(SystemExit) as exc:
+        ctl.main()
+    assert exc.value.code == 2
+
+
 def test_laptop_runs_board_and_pull_once_the_server_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(ctl, "REMOTE_RECORDER", tmp_path / "ssh_config")
     assert ctl.default_names() == ["kalshi-live", "kalshi-backup", "odds", "board", "board-web"]
