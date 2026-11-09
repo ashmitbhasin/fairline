@@ -1,0 +1,19 @@
+id: G3b-nfl-convergence
+registered: 2026-11-09
+reason: "G3 asks for NFL and NBA core markets. The recorders have run NFL only since Week 1 (tape/ctl.py passes
+  --league nfl), so there is no NBA tape and G3 cannot be read as written. This gate keeps G3's metric, thresholds,
+  minimum sample and holdout unchanged and narrows only the scope: NFL, on the tape the server recorded (from the
+  Oct 26 cutover, the same tape G1b passed). It was registered on Nov 9, before any convergence measurement had
+  been run on any tape. G3 stays open for NBA."
+hypothesis: After a devigged Pinnacle move of at least 2c, Kalshi's mid takes minutes, not seconds, to close half the gap.
+data: tape.kalshi_ws order books; tape.odds Pinnacle snapshots; NFL core markets (ML, spread, total);
+      from 2026-10-26 18:11 ET through 2026-11-09 23:59 ET
+metric: seconds from the Pinnacle snapshot showing the move to the Kalshi mid closing 50% of the gap
+resolution_note: Pinnacle timing is limited by the poll interval (60 s in pregame windows) and by The Odds API's
+                 own delay ("odds are from public website which may incur a delay"); measure that lag too.
+go: median >= 60 s AND my cancel/replace p95 < 25th percentile of convergence times
+no_go: median < 15 s
+min_sample: 100 qualifying moves
+holdout: data from 2026-11-10 to 2026-11-16 stays unread until the decision review
+earliest_read: 2026-11-09
+owners: {runs: quant-analyst, reviews: red-team, decides: ashmit}
