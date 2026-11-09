@@ -15,7 +15,7 @@ An agent-run market-making desk for sports prediction markets. It borrows the sh
 | `tape/book.py` | Rebuilds order books from snapshots and deltas; detects sequence gaps. |
 | `fairvalue/devig.py` | Margin removal: multiplicative, additive, power, Shin. |
 | `fairvalue/fees.py` | Kalshi taker and maker fees, break-even, fractional Kelly. |
-| `research/registry/` | Gates G1–G7 and kill criteria, committed before the data they judge, and G1b (NFL tape integrity) and G2b (divergence on the server's weeks), added in November with their reasons. |
+| `research/registry/` | Gates G1–G7 and kill criteria, committed before the data they judge, and G1b (NFL tape integrity), G2b (divergence on the server's weeks) and G3b (convergence on the server's NFL tape), added in November with their reasons. |
 | `config/blocklist.yaml` | Markets the desk must never trade (Indiana University teams). |
 | `tape/ctl.py` | Starts, stops and checks every service as a background process that survives VS Code restarts (under systemd on EC2). |
 | `infra/` | The EC2 recorder: `fl` drives it from the laptop, `setup.sh` and `fairline@.service` run on the server. |
